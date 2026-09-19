@@ -21,3 +21,10 @@ def test_apply_and_engine() -> None:
     assert (s.h_m, s.hdot_ms, s.xdot_ms) == (1050.0, 1.0, 31.0)
     assert abs(s.mass_kg - 110.0) < 1e-9
     assert abs(d.engine().f_max_n / DescentEngine().f_max_n - 0.9) < 1e-12
+
+
+def test_propellant_shortfall_only_reduces_and_sets_dry_mass() -> None:
+    for seed in range(50):
+        d = sample(seed, 3)
+        assert 0.91 <= d.propellant_scale <= 1.0
+    assert Dispersion().dry_mass_kg == 6_800.0

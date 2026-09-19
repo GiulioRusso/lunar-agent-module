@@ -71,6 +71,7 @@ class Simulation:
         read_guidance_sample: Callable[[], Awaitable[GuidanceSample]] | None = None,
         t_offset_s: float = 0.0,
         guidance_every_ticks: int = 25,
+        dry_mass_kg: float | None = None,
     ) -> None:
         if actuator is not None and read_guidance_sample is None:
             raise ValueError("an actuator needs read_guidance_sample to hear from the AGC")
@@ -92,6 +93,7 @@ class Simulation:
         self._read_guidance_sample = read_guidance_sample
         self._stamp_seen: int | None = None
         self.guidance_every_ticks = guidance_every_ticks
+        self.dry_mass_kg = dry_mass_kg  # engine cuts off when propellant is gone
         self.z_m = 0.0  # out-of-plane position (along the orbit normal)
         self.zdot_ms = 0.0
         self.normal_fraction = 0.0  # out-of-plane share of the thrust direction
@@ -143,6 +145,8 @@ class Simulation:
 
     async def tick(self) -> dict[str, Any]:
         throttle = await self._service_throttle() if self.actuator else self.throttle()
+        if self.dry_mass_kg is not None and self.state.mass_kg <= self.dry_mass_kg:
+            throttle = 0.0
         control = Control(throttle=throttle, pitch_rad=self.pitch_rad)
         thrust_n, _ = self.engine.thrust_and_mdot(control.throttle)
 

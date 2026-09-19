@@ -39,7 +39,7 @@ async def run(
                         agc, c, sym, setup, recorder=rec, max_sim_s=1200.0, dispersion=disp
                     )
     return {"tier": tier, "seed": seed, "dispersion": disp.__dict__,
-            "score": score(res).as_dict(), "result": summarize(res)}  # fmt: skip
+            "score": score(res, disp.dry_mass_kg).as_dict(), "result": summarize(res)}  # fmt: skip
 
 
 if __name__ == "__main__":

@@ -93,6 +93,7 @@ def _make_sim(
     t_offset_s: float,
     recorder: Recorder | None,
     engine: DescentEngine | None = None,
+    dry_mass_kg: float | None = None,
 ) -> Simulation:
     return Simulation(
         client,
@@ -106,6 +107,7 @@ def _make_sim(
         read_guidance_sample=stepped_guidance_reader(agc, symbols),
         t_offset_s=t_offset_s,
         engine=engine,
+        dry_mass_kg=dry_mass_kg,
     )
 
 
@@ -202,7 +204,18 @@ async def run_descent(
 
     clock = SteppedClock(agc)
     await clock.start()
-    sim = _make_sim(agc, client, symbols, setup, clock, state, elapsed_s, recorder, disp.engine())
+    sim = _make_sim(
+        agc,
+        client,
+        symbols,
+        setup,
+        clock,
+        state,
+        elapsed_s,
+        recorder,
+        disp.engine(),
+        disp.dry_mass_kg,
+    )
     return await _fly(
         agc, client, symbols, setup, sim, clock, elapsed_s, max_sim_s, None, notes,
         on_second, checkpoint,
@@ -232,6 +245,7 @@ async def save_checkpoint(
                 "actuator": [a.counts, a.pending, a.engine_on],
                 "pitch_rad": sim.pitch_rad,
                 "thrust_scale": sim.engine.f_max_n / DescentEngine().f_max_n,
+                "dry_mass_kg": sim.dry_mass_kg,
                 "lateral": [sim.z_m, sim.zdot_ms, sim.normal_fraction],
                 "stamp_seen": sim._stamp_seen,
                 "ticks": sim.ticks,
@@ -268,8 +282,9 @@ async def resume_descent(
     await clock.start()
     h, x, hdot, xdot, mass = saved["plant"]
     disp = Dispersion(thrust_scale=saved.get("thrust_scale", 1.0))
+    dry = saved.get("dry_mass_kg")
     sim = _make_sim(agc, client, symbols, setup, clock, PlanarState(h, x, hdot, xdot, mass),
-                    saved["t_plant_s"], recorder, disp.engine())  # fmt: skip
+                    saved["t_plant_s"], recorder, disp.engine(), dry)  # fmt: skip
     assert sim.actuator is not None
     sim.actuator.counts, sim.actuator.pending, sim.actuator.engine_on = saved["actuator"]
     sim.pitch_rad = saved["pitch_rad"]
