@@ -531,6 +531,45 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       horizontal-velocity error into touchdown, against a 1.2 m/s limit -- a correctness
       requirement, not a refinement. Also set `TEPHEM` deliberately (V70/V73 path) so the epoch is
       a documented choice rather than an accident of a fresh start.
+      **1b RESULT -- `IGNALG` CONVERGES (sub-gates 1b and the first half of 1c pass).** With the
+      Moon-fixed `RLS = M(T)*(site)` from the ported `MOONMX`, the plant's orbit in the Moon's
+      equatorial plane (`sim/frames.py: LunarFrame`), and a landing-site `REFSMMAT`, the first
+      `IGNALG` iteration reads `RGU = (-42.6, -0.9, -436.3) km` against the pad-loaded targets
+      `(-40.9, 0, -440) km` -- where the identity assumption had given `(2.4 Mm, 377 km, -2.0 Mm)`.
+      The solver applies two small corrections (time guess 352.2 -> 349.9 s), the loop counter
+      freezes at 38 (`DDUMGOOD` exits early: converged), and P63 proceeds to **`V06 N61` with no
+      alarm**. `V06N61` is a crew acknowledgement prompt ("used by the crew in P63 to reset his
+      event timer to agree with TIG") -- P63's first DSKY decision, and therefore the agent's.
+      `TIG = 323.91 s` = `TDEC1 349.9 - ZOOMTIME 26 s`, exactly as `DDUMGOOD` computes it.
+      **Two more of my own errors caught on the way:** (1) `dp_decode` assumed both words of a
+      double-precision value share a sign; the AGC does not keep them normalised between
+      operations, and `TIG` read mid-computation is `(0o2, 0o77206)` = `2*16384 - 377` = 32391 cs,
+      which the old decoder read as ~651 s. That was plausible enough to waste time before the
+      geometry ("at 651 s the vehicle is 68 km past the site") showed it couldn't be right --
+      physical sanity checks on decoded values are worth doing. (2) My own porting tolerances were
+      tighter than the flight software's 8-digit constants can support (`sin^2+cos^2 = 1 - 3.2e-9`).
+      **Documented model gap:** the ported `M` reproduces the AGC's `LAND` direction to ~0.05%
+      (~1 km); no sign/transposition variant reduces it (best 933 m across all 16), so it is
+      recorded as a measured gap and not explained. The AGC stays the authority for where it
+      believes the site is.
+      **The P63 crew sequence, mapped through the flight software's own prompts** (each is a DSKY
+      decision -- the agent's decision space, discovered rather than assumed):
+      `V37E63E` -> ~60 s of `IGNALG` -> **`V06 N61`** ("reset your event timer to agree with TIG";
+      answer `V33E`, proceed) -> **`V50 N25`, R1 = 14** (checklist code 00014: PROCEED = IMU fine
+      align, needs star sightings; **ENTER = skip**) -> **`V50 N18`** (Luminary asks the crew to
+      approve the **automatic maneuver to the burn attitude**, with the desired FDAI angles in
+      R1-R3) -> `R60LEM` slews the vehicle -> LR antenna position (`ch33` bit 6, already
+      supplied) -> countdown, ignition, engine on at minimum throttle, throttle-up after
+      `ZOOMTIME` = 26 s. The first two prompts are answered from a script; `V50N18` is the wall.
+      Also observed: `THRUST` already reads -4096 (a -BIT13 increment) as ignition prep begins.
+      **Next wall = sub-gate 1d, attitude.** `R60LEM` needs a vehicle that rotates: jets on
+      ch5/6 must torque a body whose gimbal angles feed back into the CDU registers. The
+      cheaper route to sub-gate 1e (ignition) is to seed the CDU registers at the desired burn
+      attitude so the maneuver is a no-op -- the desired angles are readable from the AGC
+      (`THETAD`), the CDU is 2^15 counts/rev (~9.8k pulses for a 107 deg pitch, through yaAGC's
+      rate-limited CDU FIFO). That is a stepping stone, not a substitute: attitude dynamics
+      (6-DoF, or at minimum 3-axis rotation under RCS torque) is still required before the agent
+      can be asked to fly anything through R60/R65/R66.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector
