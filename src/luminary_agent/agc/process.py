@@ -44,7 +44,9 @@ class AgcProcess:
         port: int = 19797,
         rope: Path = DEFAULT_ROPE,
         dump_time_s: int = 1,
+        resume_from: Path | None = None,
     ) -> None:
+        self.resume_from = resume_from
         self.workdir = workdir
         self.mode = mode
         self.port = port
@@ -53,10 +55,14 @@ class AgcProcess:
         self._proc: asyncio.subprocess.Process | None = None
 
     async def start(self) -> None:
-        args = [str(yaagc_path()), f"--port={self.port}", "--no-resume", "--quiet"]
+        args = [str(yaagc_path()), f"--port={self.port}", "--quiet"]
+        if self.resume_from is None:
+            args.append("--no-resume")
         if self.mode == "realtime":
             args += ["--nodebug", f"--dump-time={self.dump_time_s}"]
         args.append(str(self.rope))
+        if self.resume_from is not None:
+            args.append(str(self.resume_from.resolve()))
         self.workdir.mkdir(parents=True, exist_ok=True)
         piped = self.mode == "stepped"
         devnull = asyncio.subprocess.DEVNULL
@@ -106,6 +112,16 @@ class AgcProcess:
         """Snapshot all AGC state at the current pause point (~15 ms)."""
         await self._command("COREDUMP snapshot.core")
         return parse_core_dump(self.workdir / "snapshot.core")
+
+    async def save_state(self, path: Path) -> Path:
+        """Write a resumable checkpoint. The dump is the same file yaAGC itself resumes from, so
+        `AgcProcess(..., resume_from=path)` continues from exactly this point (registers,
+        erasable, channels, cycle counter). Stepped mode only: the AGC is quiescent here.
+        """
+        await self._command("COREDUMP snapshot.core")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((self.workdir / "snapshot.core").read_bytes())
+        return path
 
     async def close(self) -> None:
         if self._proc is None:

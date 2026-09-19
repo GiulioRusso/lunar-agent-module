@@ -105,3 +105,29 @@ def test_stepped_clock_keeps_plant_time_and_agc_time_together(tmp_path: Path) ->
             assert 1.3 < clock.cycles_per_instruction < 2.0  # calibrated, not left at default
 
     asyncio.run(run())
+
+
+def test_a_saved_state_resumes_exactly_where_it_left_off(tmp_path: Path) -> None:
+    """Checkpoint/resume (the AGC half of "save the simulation"): load a word through the real
+    update program, save, kill the process, start a new one from the checkpoint. The word must
+    survive and the AGC clock must continue from the saved cycle count, not restart.
+    """
+    from luminary_agent.agc.uplink import Updater
+
+    async def run() -> None:
+        saved = tmp_path / "checkpoint.core"
+        async with AgcProcess(tmp_path / "a", mode="stepped", port=19814) as agc:
+            await agc.step(30_000)
+            async with AgcClient(port=19814) as client:
+                await Updater(agc, client).v71(0o55, [0o12345])
+            await agc.save_state(saved)
+            cycles_at_save = (await agc.coredump()).cycle_counter
+
+        async with AgcProcess(tmp_path / "b", mode="stepped", port=19815, resume_from=saved) as agc:
+            resumed = await agc.coredump()
+            assert resumed.erasable[0][0o55] == 0o12345
+            assert resumed.cycle_counter == cycles_at_save
+            await agc.step(20_000)
+            assert (await agc.coredump()).cycle_counter > cycles_at_save  # and it runs on
+
+    asyncio.run(run())

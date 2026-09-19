@@ -492,6 +492,20 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       for DP). **Practical consequence: stepped mode is wall-clock-paced, so experiments that need
       minutes of AGC time cost minutes of real time** — budget for it, run long probes in the
       background, and keep the integration suite's slow tests few.
+      **1b finding — alarm 1412 "DESCENT IGNALG NOT CONVERGING", diagnosed, not guessed.** The first
+      P63 run (circular 15 km orbit) ran `IGNALG` for ~56 s of AGC time, then raised 1412. That is
+      the flight software correctly rejecting an inconsistent scenario. `IGNALG` searches *along the
+      state vector's own orbit* for the ignition time at which the vehicle is at the pad-loaded
+      targets relative to the landing site: `RIGNZ` = −440 km ground range, `RIGNX` = −40.9 km
+      "altitude" (checks out: 15 km at 440 km range is 15 − 440²/2R ≈ −40.7 km in the tangent-plane
+      frame), `VIGN` = 16.995 m/cs = 1699.5 m/s. A circular orbit flies ~16 m/s under `VIGN` at
+      *every* point, so no choice of time can null a constant offset. The scenario must be a
+      descent **ellipse** with perilune speed ≈ 1699.5 m/s, and the site 440 km beyond perilune.
+      → `plant/orbit.py` (`DescentOrbit.with_perilune_speed`), whose Kepler time-to-perilune is
+      validated by integrating the RK4 plant for that time and arriving at perilune. Also aligned
+      the plant's Moon radius with Luminary's `RSUBM` = 1,738,090 m: the flight software measures
+      altitude above a sphere of exactly that radius, so a 690 m surface disagreement would show
+      up as the wrong touchdown altitude.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector
