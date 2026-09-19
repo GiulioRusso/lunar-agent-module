@@ -645,6 +645,11 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       **Caveats to carry into results:** touchdown is 301 m from the plant's own site (the AGC
       steers to its own `LAND`, the ~1 km MOONMX-port residual plus lateral drift; judging against
       the AGC's `LAND` is open); AGC `MASS` is 6,804 kg vs a true ~8,100; perfect pointing.
+      **Viewer (Phase 1b, first cut):** `python -m luminary_agent.viz.replay episode.jsonl.gz out.html`
+      -> one self-contained HTML (side elevation, auto-zoom to altitude, LM + thrust flame + velocity
+      vector, altitude grid, instrument readouts, play/pause, 0.5-20x, scrubber; 1x default = normal
+      speed replay of the saved log, no AGC needed). Terrain is a cosmetic profile; ground truth is
+      the h = 0 line. Not yet: real terrain from a scenario, AGC/DSKY panel, alarms timeline.
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,
