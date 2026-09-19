@@ -667,6 +667,26 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       yaAGC's socket build stubs `RequestRadarData` (SocketAPI.c), so an LR needs RNRAD pulses
       injected in step with the radar gate (RADARUPT after 9 TIME5 counts with CHAN13 bit 4 set),
       the LR range/velocity discretes on CHAN33, and Luminary's R12 enables; sized as its own item.
+      **Eval sets:** `eval/sets.py` -- FROZEN = 3 tiers x seeds 100-119 (60), DEV = 3 tiers x seeds
+      0-4 (15), disjoint; `run_set --set frozen|dev`, `eval/report.py` prints per-tier summary.
+      **Blocker found for the ROD (P66) channel -- the baselines the plan wants ("PIDAgent on the
+      ROD channel", "ScriptedAgent: P63 -> P64 -> P66 takeover") cannot be built yet, for two
+      independent reasons, both verified:**
+      (1) *No delivery path.* Luminary counts ROD clicks in `DESCBITS`, reached only from MARKRUPT
+      (CHAN16 bits 6/7). yaAGC's socket build sets no interrupt for a CHAN16 write (only CHAN15 ->
+      KEYRUPT, 0173 -> UPRUPT; SocketAPI.c), and its debugger has no interrupt injection. Entering
+      P66 also needs the ATT HOLD discrete (CHAN31 bit 13 clear) *and* a nonzero `RODCOUNT`
+      (`STABL?`/`P66NOW?`). Prototyped: patching `RODCOUNT` = 1 in the stepped core file (what the
+      trap would do) plus CHAN31 bit 13 clear does switch Luminary to P66 (`MODREG` = 102). A
+      pause-boundary poke via core-dump resume is therefore feasible, as a documented deviation
+      from "never poke".
+      (2) *Missing pad loads.* Luminary 099's P66 law uses `RODSCALE`, `LAG/TAU`, `MAXFORCE`,
+      `MINFORCE` (and `TAUROD`, loaded from 069), erasable "I" variables whose values appear in no
+      source in the pinned repo (069 has different constants; 099 has no PADLOADS). At zero,
+      P66 commanded minimum throttle (4.7 kN) and the LM fell. Apollo 11's real values must come
+      from a sourced document (Luminary 1A pad-load listing / GSOP) -- not guessed.
+      Until both are resolved, the sourceable scenario axes are those that need no new actuation:
+      fuel margin, engine degradation, alarms, and (if modelled) the landing radar.
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,
