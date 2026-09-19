@@ -25,22 +25,22 @@ from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.coredump import THRUST_REGISTER
 from luminary_agent.agc.process import AgcProcess
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
+from luminary_agent.plant.lunar_orientation import Mat
 from luminary_agent.plant.propulsion import DescentEngine
-from luminary_agent.plant.sensors import PlanarImu
+from luminary_agent.plant.sensors import Imu
 from luminary_agent.plant.throttle import ThrottleActuator
 from luminary_agent.sim.clock import SimClock, SteppedClock
-from luminary_agent.sim.frames import inertial_vector, theta_rad
+from luminary_agent.sim.frames import LunarFrame, mat_vec, theta_rad
 from luminary_agent.sim.recorder import Recorder
 
 
 @dataclass(frozen=True)
 class PipaAxes:
-    """Which AGC PIPA register carries each inertial in-plane axis. With REFSMMAT = identity
-    the stable member is the MCI frame (sim/frames.py): X -> PIPAX, Y -> PIPAY.
-    """
+    """The AGC PIPA register for each stable-member axis: X -> PIPAX, Y -> PIPAY, Z -> PIPAZ."""
 
     x: int
     y: int
+    z: int
 
 
 class Simulation:
@@ -50,6 +50,8 @@ class Simulation:
         clock: SimClock,
         state: PlanarState,
         pipa_axes: PipaAxes,
+        frame: LunarFrame,
+        refsmmat: Mat,
         engine: DescentEngine | None = None,
         recorder: Recorder | None = None,
         throttle: Callable[[], float] = lambda: 0.0,
@@ -64,12 +66,14 @@ class Simulation:
         self.clock = clock
         self.state = state
         self.pipa_axes = pipa_axes
+        self.frame = frame
+        self.refsmmat = refsmmat
         self.engine = engine or DescentEngine()
         self.recorder = recorder
         self.throttle = throttle
         self.pitch_rad = pitch_rad
         self.dt_s = dt_s
-        self.imu = PlanarImu()
+        self.imu = Imu()
         self.ticks = 0
         self.actuator = actuator
         self._read_thrust_increment = read_thrust_increment
@@ -92,27 +96,30 @@ class Simulation:
         control = Control(throttle=throttle, pitch_rad=self.pitch_rad)
         thrust_n, _ = self.engine.thrust_and_mdot(control.throttle)
 
-        # An accelerometer senses specific force (thrust / mass), never gravity, and the PIPAs
-        # sit on an inertially-fixed stable member: rotate the local (radial, tangential)
-        # thrust acceleration into MCI axes at the pre-step angle.
+        # An accelerometer senses specific force (thrust / mass), never gravity. It sits on an
+        # inertially-fixed stable member, so rotate the local (radial, tangential) thrust
+        # acceleration into the reference frame at the pre-step angle, then into stable-member
+        # axes with REFSMMAT.
         sf_radial = thrust_n * math.cos(control.pitch_rad) / self.state.mass_kg
         sf_tangential = -thrust_n * math.sin(control.pitch_rad) / self.state.mass_kg
-        sf_x, sf_y, _ = inertial_vector(sf_radial, sf_tangential, theta_rad(self.state))
+        sf_ref = self.frame.specific_force_ref(sf_radial, sf_tangential, theta_rad(self.state))
+        sf_sm = mat_vec(self.refsmmat, sf_ref)
         self.state = step(self.state, control, self.engine, self.dt_s)
 
-        pulses_x, pulses_y, _ = self.imu.sample(sf_x, sf_y, 0.0, self.dt_s)
-        await self.client.send_pipa_pulses(self.pipa_axes.x, pulses_x)
-        await self.client.send_pipa_pulses(self.pipa_axes.y, pulses_y)
+        (px, py, pz), _ = self.imu.sample(sf_sm, 0.0, self.dt_s)
+        await self.client.send_pipa_pulses(self.pipa_axes.x, px)
+        await self.client.send_pipa_pulses(self.pipa_axes.y, py)
+        await self.client.send_pipa_pulses(self.pipa_axes.z, pz)
 
         await self.clock.advance(self.dt_s)
         self.ticks += 1
 
-        record = self._record(thrust_n, (pulses_x, pulses_y))
+        record = self._record(thrust_n, (px, py, pz))
         if self.recorder is not None:
             self.recorder.tick(record)
         return record
 
-    def _record(self, thrust_n: float, pulses: tuple[int, int]) -> dict[str, Any]:
+    def _record(self, thrust_n: float, pulses: tuple[int, int, int]) -> dict[str, Any]:
         dsky = self.client.dsky
         act = self.client.actuators
         return {

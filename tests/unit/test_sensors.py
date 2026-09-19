@@ -5,7 +5,7 @@ failure-prone module" before it's ever wired to the AGC.
 
 import math
 
-from luminary_agent.plant.sensors import CDU_SCALE_RAD, PIPA_SCALE_MS, PlanarImu, PulseCounter
+from luminary_agent.plant.sensors import CDU_SCALE_RAD, PIPA_SCALE_MS, Imu, PulseCounter
 
 
 def test_pipa_scale_factor_matches_source_constant() -> None:
@@ -60,14 +60,8 @@ def test_negative_acceleration_emits_negative_pulses() -> None:
     assert math.isclose(counter._residual, -0.5)
 
 
-def test_planar_imu_samples_independent_axes() -> None:
-    imu = PlanarImu()
-    v_pulses, h_pulses, cdu_pulses = imu.sample(
-        specific_force_x_ms2=10.0,
-        specific_force_y_ms2=0.0,
-        pitch_rate_rad_s=0.0,
-        dt_s=1.0,
-    )
-    assert v_pulses > 0
-    assert h_pulses == 0
-    assert cdu_pulses == 0
+def test_imu_samples_three_independent_axes() -> None:
+    imu = Imu()
+    (px, py, pz), cdu = imu.sample((10.0, 0.0, -10.0), pitch_rate_rad_s=0.0, dt_s=1.0)
+    assert px > 0 and py == 0 and pz < 0
+    assert cdu == 0

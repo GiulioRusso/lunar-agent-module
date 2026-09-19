@@ -51,12 +51,21 @@ def dp_encode(fraction: float) -> tuple[int, int]:
     return high, low
 
 
+def _signed(word: int) -> int:
+    """One 15-bit ones'-complement word as a signed integer."""
+    return word - WORD_MASK if word >= _HALF else word
+
+
 def dp_decode(high: int, low: int) -> float:
-    """Decode (high, low) AGC words to a fraction."""
-    negative = high >= _HALF
-    if negative:
-        high, low = WORD_MASK ^ high, WORD_MASK ^ low
-    return (-1 if negative else 1) * ((high << 14) + low) / _DP_SCALE
+    """Decode (high, low) AGC words to a fraction.
+
+    The value is high * 2**14 + low with each word signed independently. The words of a
+    normalised number agree in sign, but the AGC does not keep them that way between
+    operations (TPAGREE forces agreement when a program needs it), and a value read out of
+    erasable mid-computation can have a positive high word and a negative low word -- as
+    Luminary's TIG does: (0o2, 0o77206) is 2*16384 - 377 = 32391, not a huge negative number.
+    """
+    return (_signed(high) * (1 << 14) + _signed(low)) / _DP_SCALE
 
 
 def to_fraction(value: float, b: int) -> float:

@@ -95,3 +95,18 @@ def test_refsmbit_is_bit_13_of_flagwrd3() -> None:
     from luminary_agent.agc.landing_setup import REFSMBIT_MASK
 
     assert REFSMBIT_MASK == 0o10000  # "10000 FOR REFSMMAT GOOD" (PADLOADS.agc), bit 13, 1-based
+
+
+def test_dp_words_with_disagreeing_signs_decode_as_hi_times_2_14_plus_lo() -> None:
+    """Luminary's TIG, read from a live AGC mid-computation: high word +2, low word negative.
+    Its true value is 32391 cs = 323.91 s (= TDEC1 349.9 s - ZOOMTIME 26 s, per DDUMGOOD);
+    a decoder that trusts the high word's sign alone reads it as ~651 s.
+    """
+    value = dp_to_value(0o2, 0o77206, 28)
+    assert value == 2 * 16384 - 377 == 32391
+    assert math.isclose(value / 100.0, 323.91)
+
+
+def test_agreeing_sign_words_are_unchanged_by_the_signed_decoder() -> None:
+    for f in (0.0, 1e-9, 0.5, -0.5, 0.123456789, -0.987654321):
+        assert abs(dp_decode(*dp_encode(f)) - f) <= 1 / 2**28

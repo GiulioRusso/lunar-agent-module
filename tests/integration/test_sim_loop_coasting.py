@@ -17,13 +17,14 @@ import pytest
 from luminary_agent.agc.build import listing_path
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.process import AgcProcess, artifacts_present
-from luminary_agent.agc.registers import REG_PIPAX, REG_PIPAY
+from luminary_agent.agc.registers import REG_PIPAX, REG_PIPAY, REG_PIPAZ
 from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import load_symbols
 from luminary_agent.plant.discretes import Discretes
 from luminary_agent.plant.dynamics import PlanarState
 from luminary_agent.plant.gravity import MU_MOON, R_MOON
 from luminary_agent.sim.clock import SteppedClock
+from luminary_agent.sim.frames import IDENTITY, PLANE_IS_XY
 from luminary_agent.sim.loop import PipaAxes, Simulation
 from luminary_agent.sim.recorder import Recorder, read_episode
 
@@ -56,7 +57,9 @@ def test_coasting_episode_is_recorded_and_the_agc_stays_quiet(tmp_path: Path) ->
                         client,
                         clock,
                         PlanarState(h0, 0.0, 0.0, v_circ, 15_000.0),
-                        PipaAxes(x=REG_PIPAX, y=REG_PIPAY),
+                        PipaAxes(x=REG_PIPAX, y=REG_PIPAY, z=REG_PIPAZ),
+                        PLANE_IS_XY,
+                        IDENTITY,
                         recorder=rec,
                     )
                     await sim.run(3.0)
@@ -77,5 +80,5 @@ def test_coasting_episode_is_recorded_and_the_agc_stays_quiet(tmp_path: Path) ->
     assert len(records) == 150
     assert records[0]["t"] == pytest.approx(0.02)
     assert records[-1]["t"] == pytest.approx(3.0)
-    assert all(r["pipa_pulses"] == [0, 0] for r in records)
+    assert all(r["pipa_pulses"] == [0, 0, 0] for r in records)
     assert all(abs(r["h_m"] - h0) < 1.0 for r in records)

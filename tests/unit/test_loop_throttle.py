@@ -8,6 +8,7 @@ from luminary_agent.agc.actuators import ActuatorState
 from luminary_agent.plant.dynamics import PlanarState
 from luminary_agent.plant.propulsion import F_MAX_N
 from luminary_agent.plant.throttle import MIN_COUNTS, ThrottleActuator
+from luminary_agent.sim.frames import IDENTITY, PLANE_IS_XY
 from luminary_agent.sim.loop import PipaAxes, Simulation
 
 
@@ -42,7 +43,9 @@ def _sim(client: FakeClient, reads: list[int], increments: list[int]) -> Simulat
         client,  # type: ignore[arg-type]
         FakeClock(),
         PlanarState(15_000.0, 0.0, 0.0, 1_680.0, 15_000.0),
-        PipaAxes(x=0o37, y=0o40),
+        PipaAxes(x=0o37, y=0o40, z=0o41),
+        PLANE_IS_XY,
+        IDENTITY,
         actuator=ThrottleActuator(),
         read_thrust_increment=reader,
     )
@@ -124,6 +127,8 @@ def test_actuator_without_a_reader_is_rejected() -> None:
             FakeClient(),  # type: ignore[arg-type]
             FakeClock(),
             PlanarState(1.0, 0.0, 0.0, 0.0, 1.0),
-            PipaAxes(0o37, 0o40),
+            PipaAxes(0o37, 0o40, 0o41),
+            PLANE_IS_XY,
+            IDENTITY,
             actuator=ThrottleActuator(),
         )
