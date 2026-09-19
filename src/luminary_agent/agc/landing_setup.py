@@ -1,14 +1,20 @@
 """AGC-side inputs P63 needs beyond the pad loads and the state vector (all loaded via P27).
 
 REFSMMAT  3x3 DP matrix, row-major, elements stored halved (B1: the only reading that lets a
-          unit element fit; Luminary's comments say "2(-1)"). Identity puts the stable member
-          on the inertial reference frame (see sim/frames.py).
+          unit element fit; Luminary's comments say "2(-1)"). For P63 it must be the
+          *landing-site frame*: X up at the site, Z toward the direction of travel, Y = Z x X.
+          IGNALG runs with the guidance matrix CG = identity, so RGU = R - LAND is expressed in
+          stable-member axes, and RIGNX/RIGNZ ("altitude", "ground range") only mean something
+          in that frame. Identity is fine for coasting tests but wrong for P63.
 REFSMFLG  bit 13 of FLAGWRD3 (REFSMBIT). P63's first act (R02BOTH) raises alarm 220 and
           aborts to P00 without it. V72 overwrites a whole word, so it is read-modify-write.
-RLS       landing-site vector, Moon-fixed, metres B-27 (settled from P57's VSL2 before
-          R-TO-RP "gets RLS B-27" and P52LS's VSR2 before LAT-LONG). With zero libration and
-          a ~10 minute horizon RP-TO-R is the identity to ~2 mrad (lunar rotation), below
-          anything this plant resolves, so Moon-fixed == inertial here.
+RLS       landing-site vector, **Moon-fixed**, metres B-27 (settled from P57's VSL2 before
+          R-TO-RP "gets RLS B-27" and P52LS's VSR2 before LAT-LONG). It is NOT the inertial
+          site vector: RP-TO-R rotates it through MOONMX, the Moon's real orientation matrix
+          (orbital elements BSUBO/FSUBO/NODIO/SINI... plus time since epoch), which is nowhere
+          near identity. An earlier version of this docstring claimed it was identity to ~2
+          mrad; that was wrong, and it is why IGNALG diverged. A consistent RLS needs that
+          matrix -- see APOLLO_AGENT_PLAN.md, Gate 1 ledger, "lunar orientation".
 TLAND     nominal time of landing, AGC-clock centiseconds B-28 (double precision).
 """
 

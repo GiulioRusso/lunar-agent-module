@@ -446,7 +446,7 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       by anything we send (present at 0.1 s of AGC time, before any I/O). Fix is what a crew does
       after power-up: `V36E` fresh start (`SteppedDsky.fresh_start`). "No alarms" for every later
       gate therefore means *no alarm after a fresh start*. Left MODREG = -0 (fresh-start mode);
-      P27 accepts it. **Decided (was open): REFSMMAT = identity**, so the stable member *is* the
+      P27 accepts it. **Decided for coasting (SUPERSEDED for P63 -- see the lunar-orientation finding below): REFSMMAT = identity**, so the stable member *is* the
       Moon-centred inertial frame and the PIPAs measure specific force along inertial X/Y
       (`sim/frames.py`: orbit in the X-Y plane, +X = local vertical at t0, +Y = direction of
       travel). This also corrected a design error: the IMU model had split specific force into
@@ -472,9 +472,9 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
          values differ. Same guidance family, so it is a consistent nominal scenario, but it is
          not "Apollo 11's pad load" and must not be described as one. → `agc/padloads.py`, parsed
          from that file, tested against it.
-      8. `REFSMMAT` + `REFSMFLG` (read-modify-write of `FLAGWRD3`), `RLS` and the Moon-orientation
-         constants (`RP-TO-R` reduces to identity for a ~10 min horizon with zero libration:
-         residual ~2 mrad from lunar rotation, below plant resolution).
+      8. `REFSMMAT` + `REFSMFLG` (read-modify-write of `FLAGWRD3`), `RLS`, and -- **corrected, this
+         was wrong the first time** -- the Moon's orientation (see "lunar orientation" below). An
+         earlier version of this item claimed `RP-TO-R` is identity to ~2 mrad; it is not.
       Useful oracle found: `V06N89`/`V06N43` make the flight software convert `RLS` / position
       back to lat-long-altitude, so a wrong scale shows up as an absurd altitude on the DSKY.
       **1b RESULT (exploratory, will become a test): `V37E63E` engages P63 with no alarm.**
@@ -506,6 +506,31 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       the plant's Moon radius with Luminary's `RSUBM` = 1,738,090 m: the flight software measures
       altitude above a sphere of exactly that radius, so a 690 m surface disagreement would show
       up as the wrong touchdown altitude.
+      **1b finding -- how P63's ignition solver actually fails, and what it is telling us.** With a
+      `snapshot -> resume` harness (each experiment ~1 min instead of ~4) the internals of `IGNALG`
+      are observable (`NIGNLOOP`, `PIPTIME1`, `RGU`, `VGU`, all plain erasables). Two experiments:
+      (a) circular orbit: 40 iterations, time guess stepping by a *constant -2621.4 s* (= 2^18 cs, a
+      saturated correction), `RGU` swinging wildly, alarm 1412 (not converging). (b) descent
+      ellipse + landing-site `REFSMMAT`: alarm 1406 (bad return from `ROOTPSRS`) at iteration 1.
+      Reading `RGVGCALC`/`GUIDINIT`/`MOONMX` explained both. **(i) The guidance frame *is* the
+      stable-member frame** (`CG` = identity in `IGNALG`, `RGU = CG*(R - LAND)`), so `REFSMMAT` must
+      be the landing-site orientation, not identity; the loaded matrix reads back exactly as
+      intended. **(ii) `RLS` is Moon-fixed and `RP-TO-R` applies the Moon's real orientation**
+      (`MOONMX`: orbital elements + time since epoch; `TEPHEM` = ephemeris time at AGC zero).
+      Evidence: `|LAND|` = 1,738,0xx m matches `|RLS|` (so the scales are right) but its
+      *direction* in guidance coordinates is (-0.42, -0.22, +0.88) instead of (1, 0, 0) -- a
+      ~115 degree rotation. `RLS`, `TLAND`, `RRECTLEM` and `REFSMMAT` all read back exactly.
+      **Lunar orientation -- what has to be built (not yet done):** (1) port `MOONMX` (constants
+      `BSUBO/BDOT/FSUBO/FDOT/NODIO/NODDOT/SINI/COSI`, `MOONRATE` are fixed-memory 2DECs in the
+      source) to `plant/lunar_orientation.py`; the observed `LAND` above is a ready-made golden
+      test. (2) Choose the plant's orbit plane as the Moon's *equatorial* plane in the AGC's
+      reference frame (pole = row 3 of M), so lunar rotation is an in-plane rotation. (3) Compute
+      `RLS = M(T) * R_site_ref` for a chosen site. (4) **The plant must rotate the surface too**:
+      the site moves ~4.6 m/s inertially (omega_moon ~ 2.66e-6 rad/s) and the AGC computes velocity
+      *relative to the surface* (`V - WM x R`). A plant that ignores it carries a ~4.6 m/s
+      horizontal-velocity error into touchdown, against a 1.2 m/s limit -- a correctness
+      requirement, not a refinement. Also set `TEPHEM` deliberately (V70/V73 path) so the epoch is
+      a documented choice rather than an accident of a fresh start.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector
