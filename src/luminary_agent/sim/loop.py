@@ -12,6 +12,12 @@ loop takes a guidance sample (a ~15 ms core dump) at engine ignition and then ev
 thrust along the freshly-written UNFC/2 every time. Engine on/off comes from CHAN11.
 Without an actuator the `throttle` callable is used directly (tests, null baselines).
 
+Out of plane: the plant is planar, but the thrust the AGC commands is not. The out-of-plane
+component drives a small lateral channel (z, zdot; linearised about the orbit plane) that the
+PIPAs feel, so the AGC's cross-range loop closes instead of winding up on an error the plant cannot
+express. The in-plane thrust is left at full magnitude (error 1 - cos(beta), a fraction of a percent
+for the few-degree out-of-plane angles seen).
+
 Deliberately absent so far: attitude feedback (CDU angles, jets acting on the vehicle).
 """
 
@@ -28,12 +34,13 @@ from luminary_agent.agc.guidance import GuidanceSample, read_guidance
 from luminary_agent.agc.process import AgcProcess
 from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
+from luminary_agent.plant.gravity import MU_MOON, R_MOON
 from luminary_agent.plant.lunar_orientation import Mat
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.sensors import Imu
 from luminary_agent.plant.throttle import ThrottleActuator
 from luminary_agent.sim.clock import SimClock, SteppedClock
-from luminary_agent.sim.frames import LunarFrame, dot, mat_vec, theta_rad
+from luminary_agent.sim.frames import LunarFrame, cross, dot, mat_vec, theta_rad
 from luminary_agent.sim.recorder import Recorder
 
 
@@ -85,6 +92,9 @@ class Simulation:
         self._read_guidance_sample = read_guidance_sample
         self._stamp_seen: int | None = None
         self.guidance_every_ticks = guidance_every_ticks
+        self.z_m = 0.0  # out-of-plane position (along the orbit normal)
+        self.zdot_ms = 0.0
+        self.normal_fraction = 0.0  # out-of-plane share of the thrust direction
 
     def _apply_direction(self, direction_sm: tuple[float, float, float]) -> None:
         """Point the thrust along the AGC's command (perfect pointing -- see agc/guidance.py).
@@ -103,7 +113,13 @@ class Simulation:
         theta = theta_rad(self.state)
         radial = ex * math.cos(theta) + ey * math.sin(theta)
         tangential = -ex * math.sin(theta) + ey * math.cos(theta)
-        self.pitch_rad = math.atan2(-tangential, radial)
+        normal = dot(ref, cross(self.frame.e1, self.frame.e2))
+        in_plane = math.hypot(radial, tangential)
+        # ponytail: a near-zero in-plane part (hover, thrust nearly along the normal) keeps the
+        # last pitch instead of flipping on numerical noise.
+        if in_plane > 1e-3 * abs(normal) and in_plane > 1e-9:
+            self.pitch_rad = math.atan2(-tangential, radial)
+        self.normal_fraction = normal / math.sqrt(in_plane**2 + normal**2 or 1.0)
 
     async def _service_throttle(self) -> float:
         """Fold the AGC's engine and throttle commands into the actuator; return throttle."""
@@ -137,7 +153,18 @@ class Simulation:
         sf_radial = thrust_n * math.cos(control.pitch_rad) / self.state.mass_kg
         sf_tangential = -thrust_n * math.sin(control.pitch_rad) / self.state.mass_kg
         sf_ref = self.frame.specific_force_ref(sf_radial, sf_tangential, theta_rad(self.state))
+        sf_normal = thrust_n * self.normal_fraction / self.state.mass_kg
+        n = cross(self.frame.e1, self.frame.e2)
+        sf_ref = (
+            sf_ref[0] + sf_normal * n[0],
+            sf_ref[1] + sf_normal * n[1],
+            sf_ref[2] + sf_normal * n[2],
+        )
         sf_sm = mat_vec(self.refsmmat, sf_ref)
+        r = R_MOON + self.state.h_m
+        z_acc = sf_normal - MU_MOON / r**3 * self.z_m
+        self.z_m += self.zdot_ms * self.dt_s + 0.5 * z_acc * self.dt_s**2
+        self.zdot_ms += z_acc * self.dt_s
         self.state = step(self.state, control, self.engine, self.dt_s)
 
         (px, py, pz), _ = self.imu.sample(sf_sm, 0.0, self.dt_s)
@@ -160,6 +187,7 @@ class Simulation:
             "t": round(self.t_offset_s + self.clock.sim_time_s, 6),
             "h_m": self.state.h_m,
             "x_m": self.state.x_m,
+            "z_m": self.z_m,
             "hdot_ms": self.state.hdot_ms,
             "vt_ms": self.state.xdot_ms,
             "mass_kg": self.state.mass_kg,

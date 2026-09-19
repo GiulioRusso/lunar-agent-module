@@ -28,6 +28,7 @@ from luminary_agent.agc.landing_setup import (
 from luminary_agent.agc.loads import padload_words, plan_loads, run_plan
 from luminary_agent.agc.padloads import load_padloads
 from luminary_agent.agc.process import AgcProcess
+from luminary_agent.agc.scaling import dp_from_value
 from luminary_agent.agc.state_vector import load_csm_state_vector, load_lm_state_vector
 from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import SymbolTable
@@ -82,6 +83,16 @@ class LandingSetup:
     t_land_cs: int
 
 
+# Luminary 099 made P65/P66's constants erasable ("I": loaded by the ground); Luminary 069 still
+# had them as fixed constants, whose values these are (LUNAR_LANDING_GUIDANCE_EQUATIONS.agc).
+# Left at zero, P65 divides by TAUVERT = 0 and the guidance overflows (alarm 1410, throttle frozen).
+_VERTICAL_DESCENT_LOADS: dict[str, tuple[int, ...]] = {
+    "V2FG": (*dp_from_value(-0.009144, 10), *dp_from_value(0.0, 10), *dp_from_value(0.0, 10)),
+    "TAUVERT": dp_from_value(600.0, 14),
+    "TAUROD": dp_from_value(300.0, 12),
+}
+
+
 async def prepare_landing(
     agc: AgcProcess,
     client: AgcClient,
@@ -98,6 +109,7 @@ async def prepare_landing(
     await agc.step(60_000)  # T4RUPT mirrors the discretes within 480 ms
 
     entries = {n: p.words for n, p in load_padloads().items() if p.is_landing and p.words}
+    entries.update(_VERTICAL_DESCENT_LOADS)
     await run_plan(updater, plan_loads(padload_words(symbols, entries)))
     await set_flag_bit(updater, agc, symbols, "FLAGWRD3", REFSMBIT_MASK)
 

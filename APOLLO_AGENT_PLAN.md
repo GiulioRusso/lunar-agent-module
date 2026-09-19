@@ -632,6 +632,19 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       (two-pass, ~2 min), so the AGC's site and the plant's coincide; (3) judge the landing against
       the AGC's `LAND`, not the plant's own site. (1) is required regardless -- a real descent has
       cross-range; (2) makes the baseline clean.
+      **1f FIXED -- the original rope lands the plant (t = 1037 s, zero alarms).** Touchdown at
+      **0.76 m/s vertical, 0.41 m/s horizontal relative to the surface** (limits 3.0 / 1.2), 7,367 kg
+      left. Two root causes, both found by inspecting the AGC's erasables against plant truth:
+      (a) the plant had no out-of-plane channel -- now `Simulation` integrates a linearised lateral
+      z from the out-of-plane part of `UNFC/2`, felt by PIPAY, so the cross-range loop closes (also
+      a pitch guard: hold last pitch when the in-plane thrust part vanishes); (b) **Luminary 099
+      moved P65/P66's constants (`V2FG` = (-3 ft/s,0,0), `TAUVERT` 600 B-14, `TAUROD` 300 B-12) from
+      fixed memory (as in 069) to erasable pad loads that its source does not provide** -- left at
+      zero, P65 divided by TAUVERT = 0, overflowed (alarm 1410) and Luminary then skips the throttle
+      call, freezing thrust. Now loaded from 069's values in `prepare_landing`.
+      **Caveats to carry into results:** touchdown is 301 m from the plant's own site (the AGC
+      steers to its own `LAND`, the ~1 km MOONMX-port residual plus lateral drift; judging against
+      the AGC's `LAND` is open); AGC `MASS` is 6,804 kg vs a true ~8,100; perfect pointing.
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,

@@ -225,6 +225,7 @@ async def save_checkpoint(
                 "t_plant_s": sim.t_offset_s + sim.clock.sim_time_s,
                 "actuator": [a.counts, a.pending, a.engine_on],
                 "pitch_rad": sim.pitch_rad,
+                "lateral": [sim.z_m, sim.zdot_ms, sim.normal_fraction],
                 "stamp_seen": sim._stamp_seen,
                 "ticks": sim.ticks,
                 "engine_enabled_at": engine_enabled_at,
@@ -264,6 +265,7 @@ async def resume_descent(
     assert sim.actuator is not None
     sim.actuator.counts, sim.actuator.pending, sim.actuator.engine_on = saved["actuator"]
     sim.pitch_rad = saved["pitch_rad"]
+    sim.z_m, sim.zdot_ms, sim.normal_fraction = saved.get("lateral", (0.0, 0.0, 0.0))
     sim._stamp_seen = saved["stamp_seen"]
     sim.ticks = saved["ticks"]
     client.actuators.engine_on = sim.actuator.engine_on  # the AGC re-announces it on connect too
