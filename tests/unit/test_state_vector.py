@@ -3,6 +3,7 @@ import math
 from luminary_agent.agc.scaling import dp_encode
 from luminary_agent.agc.state_vector import (
     SV_WORDS,
+    UPSVFLAG_CSM_MOON,
     UPSVFLAG_LM_MOON,
     StateVector,
 )
@@ -35,3 +36,10 @@ def test_words_round_trip_through_decode() -> None:
 def test_velocity_is_stored_per_centisecond() -> None:
     hi, lo = dp_encode(1_683.6 / 100.0 / 2**5)
     assert _sv().words()[9:11] == [hi, lo]
+
+
+def test_csm_and_lm_differ_only_in_the_flag_word() -> None:
+    lm, csm = _sv().words(UPSVFLAG_LM_MOON), _sv().words(UPSVFLAG_CSM_MOON)
+    assert lm[1:] == csm[1:]
+    assert csm[0] == 0o00002  # positive = CSM, |2| = lunar sphere
+    assert 0o77777 ^ lm[0] == csm[0]  # LM is exactly its ones'-complement negative

@@ -3,8 +3,19 @@ from luminary_agent.plant.discretes import ALL_ABSENT, Discretes
 
 def test_defaults_boot_state_matches_yaagc_for_untouched_channels() -> None:
     d = Discretes()
-    assert d.channel_31() == ALL_ABSENT
     assert d.channel_32() == ALL_ABSENT
+
+
+def test_default_is_the_dap_mode_switch_in_auto() -> None:
+    d = Discretes()
+    assert d.channel_31() & (1 << 13) == 0  # bit 14 present: AUTO
+    assert d.channel_31() & (1 << 12) != 0  # bit 13 absent: not ATT HOLD
+    # ...and nothing that looks like a hand-controller command.
+    assert d.channel_31() | (1 << 13) == ALL_ABSENT
+
+
+def test_dap_can_be_taken_out_of_auto() -> None:
+    assert Discretes(dap_auto=False).channel_31() == ALL_ABSENT
 
 
 def test_present_signal_is_a_cleared_bit() -> None:

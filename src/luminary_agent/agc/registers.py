@@ -28,6 +28,11 @@ PINC = 0
 PCDU = 1
 MINC = 2
 MCDU = 3
+# Fast CDU increments (agc_engine.c:PushCduFifo): the same operations, drained from yaAGC's CDU
+# FIFO at 6400 pulses/s instead of 400. Same-direction runs are stored as one FIFO entry, so a
+# long slew cannot overflow it; only direction changes consume entries.
+PCDU_FAST = 0o21
+MCDU_FAST = 0o23
 
 COUNTER_CHANNEL_BIT = 0x80
 
@@ -49,5 +54,7 @@ def pipa_pulse_packets(register: int, pulse_count: int) -> list[bytes]:
     return counter_increment_packets(register, pulse_count, PINC, MINC)
 
 
-def cdu_pulse_packets(register: int, pulse_count: int) -> list[bytes]:
+def cdu_pulse_packets(register: int, pulse_count: int, fast: bool = False) -> list[bytes]:
+    if fast:
+        return counter_increment_packets(register, pulse_count, PCDU_FAST, MCDU_FAST)
     return counter_increment_packets(register, pulse_count, PCDU, MCDU)

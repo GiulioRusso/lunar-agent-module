@@ -570,6 +570,26 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       rate-limited CDU FIFO). That is a stepping stone, not a substitute: attitude dynamics
       (6-DoF, or at minimum 3-axis rotation under RCS torque) is still required before the agent
       can be asked to fly anything through R60/R65/R66.
+      **Sub-gate 1c PASSED -- P63 runs the whole pre-ignition sequence with no alarm.** Three
+      more prerequisites found (each was a silent stall or a misleading alarm, not an error message):
+      (1) **DAP mode switch must read AUTO** (`ch31` bit 14). `R60LEM` calls `G+N,AUTO` after
+      PROCEED and, if it fails, silently re-requests the maneuver forever. (2) **A CSM state vector
+      is required**: with `MUNFLAG` set (it is, in P63) `P41SPOT` runs `CSMPREC`, a precision
+      integration of the *CSM's* state, before the LM's; on an all-zero CSM state it raises 1703
+      "ignition time slipped". Loaded via V71 with flag `+2` (CSM, lunar sphere; the LM is `-2`).
+      (3) The maneuver prompt is *two* prompts: `V50N18` (approve) -> static `V06N18` (running) ->
+      `V50N18` again (**finished; ENTER ends R60**) -- I had read the second as a loop.
+      With those, the run reaches: `V06N62` countdown displays -> **RCS ullage jets at TIG-7 s**
+      (`ch5 = 0o210`) -> **`V99 N62` at TIG-4 s** (crew must enable the engine) -> throttle-up
+      command `THRUST = +4096` (= `FLATOUT`) at `TIG + 26.9 s` = exactly `ZOOMTIME`.
+      Then alarm 1406 from descent guidance -- expected: the plant wasn't running, so there was no
+      engine and no acceleration for the guidance to see.
+      **Next (sub-gates 1e/1f): close the loop through the burn.** Needs the `Simulation` loop
+      running from ignition with: engine-enable answered (`V99N62` -> `V33E`), `ThrottleActuator`
+      fed by the strobes, and the thrust *direction*. With no attitude dynamics the direction is
+      taken as perfectly pointed: `IGNALG` points the body X axis along `R60VSAVE`/`UNFC/2`
+      (the guidance's desired thrust unit vector, in stable-member axes), readable from the AGC.
+      That is the "perfect pointing" stepping stone and must be labelled as such in any result.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector

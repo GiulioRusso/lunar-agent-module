@@ -14,6 +14,7 @@ Geometry (all derived from Luminary's own targets, see plant/orbit.py and sim/fr
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from luminary_agent.agc.client import AgcClient
@@ -27,13 +28,13 @@ from luminary_agent.agc.landing_setup import (
 from luminary_agent.agc.loads import padload_words, plan_loads, run_plan
 from luminary_agent.agc.padloads import load_padloads
 from luminary_agent.agc.process import AgcProcess
-from luminary_agent.agc.state_vector import load_lm_state_vector
+from luminary_agent.agc.state_vector import load_csm_state_vector, load_lm_state_vector
 from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.agc.uplink import Updater
 from luminary_agent.plant.discretes import Discretes
 from luminary_agent.plant.dynamics import PlanarState
-from luminary_agent.plant.gravity import R_MOON
+from luminary_agent.plant.gravity import MU_MOON, R_MOON
 from luminary_agent.plant.lunar_orientation import Mat
 from luminary_agent.plant.orbit import DescentOrbit
 from luminary_agent.sim.frames import LunarFrame
@@ -42,6 +43,7 @@ VIGN_MS = 1_699.5218  # 16.9952 m/cs, Luminary pad load
 RIGNZ_M = 440_015.0  # ground range from ignition to the site, pad load
 GUIDDURN_S = 664.4  # THE_LUNAR_LANDING.agc
 PERILUNE_ALT_M = 15_400.0
+CSM_ALT_M = 111_000.0  # ~60 nmi circular parking orbit
 NU0_RAD = -0.29  # true anomaly at the start: ~5 minutes before perilune
 
 
@@ -110,4 +112,10 @@ async def prepare_landing(
     sv = frame.state_vector(scenario.start_state, float(now_cs))
     await load_lm_state_vector(updater, symbols, sv)
     await agc.step(80_000)  # let INTWAKEU install the state vector
+
+    # The CSM, in a circular lunar orbit in the same plane and near the LM's start point.
+    v_csm = math.sqrt(MU_MOON / (R_MOON + CSM_ALT_M))
+    csm = PlanarState(CSM_ALT_M, 0.0, 0.0, v_csm, 28_000.0)
+    await load_csm_state_vector(updater, symbols, frame.state_vector(csm, float(now_cs)))
+    await agc.step(80_000)
     return LandingSetup(scenario, frame, refsmmat, now_cs, t_land_cs)

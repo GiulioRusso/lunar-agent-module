@@ -36,6 +36,9 @@ class Discretes:
     imu_fail: bool = False  # bit 13
     iss_turn_on_requested: bool = False  # bit 14
     imu_temperature_in_limits: bool = True  # bit 15
+    # --- channel 31 (attitude controller / mode switch, read by the RCS DAP) --------
+    dap_attitude_hold: bool = False  # bit 13 -- ATT HOLD on the SCS mode-control switch
+    dap_auto: bool = True  # bit 14 -- AUTO stabilisation; R60LEM's G+N,AUTO check needs it
     # --- channel 33 -------------------------------------------------------------
     lr_range_data_good: bool = False  # bit 5
     lr_position_1: bool = False  # bit 6 -- P63 waits for the antenna in position 1
@@ -61,7 +64,11 @@ class Discretes:
         return ALL_ABSENT & ~present
 
     def channel_31(self) -> int:
-        return ALL_ABSENT  # no hand-controller or mode-switch input
+        # No rotation/translation hand-controller input; only the mode-control switch, which
+        # the crew sets to AUTO before an automatic maneuver (R60LEM re-requests the maneuver
+        # forever, without error, if it reads anything else).
+        present = int((self.dap_attitude_hold and _bit(13)) | (self.dap_auto and _bit(14)))
+        return ALL_ABSENT & ~present
 
     def channel_32(self) -> int:
         return ALL_ABSENT  # no thrusters disabled, no PRO key held

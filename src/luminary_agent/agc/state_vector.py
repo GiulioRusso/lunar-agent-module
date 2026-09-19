@@ -19,6 +19,7 @@ from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.agc.uplink import Updater
 
 UPSVFLAG_LM_MOON = 0o77775
+UPSVFLAG_CSM_MOON = 0o00002  # positive = CSM; |2| = lunar sphere
 POSITION_B = 27
 VELOCITY_B = 5
 TIME_B = 28
@@ -31,8 +32,8 @@ class StateVector:
     v_ms: tuple[float, float, float]  # inertial velocity, metres/second
     t_cs: float  # time, centiseconds on the AGC clock
 
-    def words(self) -> list[int]:
-        out = [UPSVFLAG_LM_MOON]
+    def words(self, flag: int = UPSVFLAG_LM_MOON) -> list[int]:
+        out = [flag]
         for r in self.r_m:
             out += dp_from_value(r, POSITION_B)
         for v in self.v_ms:
@@ -51,4 +52,12 @@ class StateVector:
 
 
 async def load_lm_state_vector(updater: Updater, symbols: SymbolTable, sv: StateVector) -> None:
-    await updater.v71(symbols.ecadr("UPSVFLAG"), sv.words())
+    await updater.v71(symbols.ecadr("UPSVFLAG"), sv.words(UPSVFLAG_LM_MOON))
+
+
+async def load_csm_state_vector(updater: Updater, symbols: SymbolTable, sv: StateVector) -> None:
+    """P63 needs one: with MUNFLAG set, P41SPOT precision-integrates the CSM's state vector
+    to TDEC1 (CSMPREC) before the LM's. With none loaded that integration runs on zeros and
+    raises alarm 1703 ("ignition time slipped").
+    """
+    await updater.v71(symbols.ecadr("UPSVFLAG"), sv.words(UPSVFLAG_CSM_MOON))

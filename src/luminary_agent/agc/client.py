@@ -85,9 +85,9 @@ class AgcClient:
         """
         await self._send_packets(pipa_pulse_packets(register, pulse_count))
 
-    async def send_cdu_pulses(self, register: int, pulse_count: int) -> None:
-        """As send_pipa_pulses, but PCDU/MCDU for a CDU angle register."""
-        await self._send_packets(cdu_pulse_packets(register, pulse_count))
+    async def send_cdu_pulses(self, register: int, pulse_count: int, fast: bool = False) -> None:
+        """As send_pipa_pulses, but PCDU/MCDU for a CDU angle register (`fast`: 6400 pps)."""
+        await self._send_packets(cdu_pulse_packets(register, pulse_count, fast))
 
     async def _send_packets(self, packets: list[bytes]) -> None:
         assert self._writer is not None
