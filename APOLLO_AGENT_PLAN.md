@@ -658,6 +658,15 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       crashed 850 m short at 42 m/s; 2 m/s crashed 7.9 km short. ~700 m per m/s. Tiers are scaled
       accordingly; a landing-radar/LR-altitude channel (which is also the Apollo-11 decision
       scenario, 2.3) is the next plant feature for tiers where the null baseline must not just fail.
+      **NullAgent at the recalibrated tiers (seed 0 each): all three land safely** (0.73-0.86 m/s
+      vertical, ~0.4 m/s horizontal, zero alarms, 518-993 kg propellant left, 34-345 m from the
+      plant's site). So at scales pure Luminary can absorb, the tiers are too easy for Gate 3, and
+      at scales it cannot (0.3 m/s and up) the failure is uninformative because nothing can fix it.
+      Harder tiers must come from axes an agent *can* act on: fuel margin (mass/propellant), engine
+      degradation/stuck throttle, 1201/1202 overload, and -- once modelled -- landing radar. Note
+      yaAGC's socket build stubs `RequestRadarData` (SocketAPI.c), so an LR needs RNRAD pulses
+      injected in step with the radar gate (RADARUPT after 9 TIME5 counts with CHAN13 bit 4 set),
+      the LR range/velocity discretes on CHAN33, and Luminary's R12 enables; sized as its own item.
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,
