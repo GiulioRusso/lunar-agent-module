@@ -607,6 +607,36 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       written with each command. (b) `UNFC/2` is rewritten every guidance pass, not on throttle
       changes; sampled on a 0.5 s cadence. A stale value read at ignition (cross-range garbage
       left by `IGNALG`) had been flown for 300 s, thrusting prograde.
+      **1f RESULT -- a full powered descent flown by the original rope, with an honest open problem.**
+      With the plant closed around Luminary 099 (no alarms during the burn): engine lights at 10%,
+      `FLATOUT` to the 43,455 N detent at TIG+26 s, thrust pitch 92 -> 71 deg (retro), **P63 -> P64
+      automatic phase switch at t = 577 s**, throttle-down 43 -> 15 kN, tangential speed 1707 ->
+      **10 m/s**, vertical speed -> **+0.5 m/s at 177 m altitude**, propellant 15,000 -> 7,971 kg.
+      Then the last ~30 s fail: pitch flips +-180 deg, thrust winds up to 43 kN, alarm 1410
+      ("unintentional overflow in guidance"), P65, and the vehicle climbs away. **Diagnosed with the
+      new checkpoint/resume (a 17 min run reproduces in ~1 min, deterministically):** the AGC
+      believes it has a persistent **cross-range** error at the site (`RGU_y` ~ -130 to -170 m; true
+      value 0 in the planar plant) -- from the documented ~1 km residual in the `MOONMX` port plus
+      lunar rotation moving the site under the vehicle -- so `UNFC/2`, its thrust command, becomes
+      *dominated by the out-of-plane component* (x 0.001 vs y 0.007 at t = 892). A planar plant
+      drops that component, the in-plane remainder is ill-conditioned (hence the +-180 deg pitch),
+      and the AGC never sees the correction it commands (no lateral acceleration reaches its PIPAs),
+      so it winds up. **The plant cannot yet express an error the AGC is trying to fix.**
+      Also noted: `MASS` in the AGC is a constant 6,804 kg (pad-load default) vs a true 8,100 ->
+      7,500 kg; the guidance closes on acceleration so this scales consistently, but the loaded
+      mass should be set deliberately.
+      **Options, in the order I'd take them:** (1) *out-of-plane dynamics* -- add a lateral position
+      and velocity so the plant obeys the full thrust vector (small: `a_lat = T*u_y/m - mu*z/r^3`),
+      PIPAY then responds and the AGC's cross-range loop closes instead of winding up; (2) *remove the
+      source*: read the AGC's own `LAND` after `IGNALG` and rotate `RLS` to cancel the port residual
+      (two-pass, ~2 min), so the AGC's site and the plant's coincide; (3) judge the landing against
+      the AGC's `LAND`, not the plant's own site. (1) is required regardless -- a real descent has
+      cross-range; (2) makes the baseline clean.
+      **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
+      yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
+      comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,
+      `plant/surface.py` (touchdown judged relative to the rotating surface: ~4.6 m/s of the
+      inertial tangential speed at touchdown is the surface's own).
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector
