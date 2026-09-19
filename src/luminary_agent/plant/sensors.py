@@ -8,8 +8,13 @@ UnprogrammedIncrement packet (channel = 0x80 | register, value = PINC/MINC) is a
 separate, later step (external/virtualagc/yaAGC/agc_engine.c:UnprogrammedIncrement).
 
 Scale factors:
-  PIPA: 0.0585 ft/s per pulse (external/virtualagc/Contributed/LM_Simulator/lm_simulator.tcl,
-  PIPA_INCR) -- the one AGC-adjacent source in this repo that states it numerically.
+  PIPA: 0.01 m/s (1 cm/s) per pulse -- read off Luminary's own constants, not a document:
+  CONTROLLED_CONSTANTS.agc `KPIP1 2DEC .0128 # SCALES DELV TO UNITS OF 2(7) M/CS`, with DELV the
+  pulse count scaled 2**-14, so one pulse = 2**-14 * .0128 * 2**7 = 1.0e-4 m/cs = 0.01 m/s.
+  CORRECTION: an earlier version used 0.0585 ft/s (1.78 cm/s) from the Tcl LM_Simulator stub.
+  0.0585 is the *Command Module's* 5.85 cm/s in m/s, and its units were mislabelled by me.
+  The closed-loop descent exposed it: fed 1.78 cm/s pulses, the AGC sensed only ~half the
+  true deceleration and under-braked.
   CDU: 360/32768 deg per pulse, i.e. a full 15-bit-counter revolution -- cross-checked
   against the same file's comment "39.55078125'' of arc" (360*3600/32768 == 39.55078125).
 
@@ -24,8 +29,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-FT_TO_M = 0.3048
-PIPA_SCALE_MS = 0.0585 * FT_TO_M  # m/s per pulse
+PIPA_SCALE_MS = 0.01  # m/s per pulse (see module docstring)
 CDU_SCALE_RAD = math.radians(360.0 / 32768.0)  # rad per pulse
 
 

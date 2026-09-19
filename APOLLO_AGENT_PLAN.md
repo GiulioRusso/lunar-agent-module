@@ -590,6 +590,23 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       taken as perfectly pointed: `IGNALG` points the body X axis along `R60VSAVE`/`UNFC/2`
       (the guidance's desired thrust unit vector, in stable-member axes), readable from the AGC.
       That is the "perfect pointing" stepping stone and must be labelled as such in any result.
+      **1e/1f finding -- the PIPA pulse weight was wrong (mine, and it was hidden until the loop
+      closed).** The first full burn ended in a crash, 200+ km short. Comparing the AGC's own belief
+      (`RGU`/`VGU`, plain erasables) with the plant's truth showed *position* agreeing to <0.3% (so
+      frames, `REFSMMAT`, the ported lunar orientation and site placement were all right) but the
+      AGC's *velocity change* being exactly 0.498 of the truth: it sensed half the deceleration and
+      under-braked. Cause: `PIPA_SCALE_MS` = 0.0585 "ft/s", from the Tcl LM_Simulator stub,
+      unsourced as to units. Luminary's own constants give it exactly: `KPIP1 2DEC .0128` scales
+      `DELV` (pulses x 2^-14) to units of 2^7 m/cs => **1.0e-4 m/cs = 0.01 m/s per pulse**. 0.0585 is
+      the *Command Module's* 5.85 cm/s. After the fix `VGU` tracks truth: 231.8 vs 231.7 m/s. Lesson,
+      twice over now: a constant from a contributed stub is a hypothesis, and the flight software's
+      own arithmetic is the authority. The unit test now derives the value from `KPIP1`.
+      **Also found while closing the loop (both mine):** (a) `CHAN14` bit 4 is a *latched level*
+      (`WOR CHAN14 # TURN ON THRUST DRIVE` at fresh start), not a pulse -- counting rising edges
+      missed every throttle command after the first; the trigger is now `TTHROT`, the clock stamp
+      written with each command. (b) `UNFC/2` is rewritten every guidance pass, not on throttle
+      changes; sampled on a 0.5 s cadence. A stale value read at ignition (cross-range garbage
+      left by `IGNALG`) had been flown for 300 s, thrusting prograde.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector

@@ -8,9 +8,11 @@ import math
 from luminary_agent.plant.sensors import CDU_SCALE_RAD, PIPA_SCALE_MS, Imu, PulseCounter
 
 
-def test_pipa_scale_factor_matches_source_constant() -> None:
-    # 0.0585 ft/s per pulse, converted to m/s -- see sensors.py module docstring for source.
-    assert math.isclose(PIPA_SCALE_MS, 0.0585 * 0.3048)
+def test_pipa_pulse_is_one_cm_per_second_as_luminary_scales_it() -> None:
+    # KPIP1 = .0128 scales DELV (pulses * 2**-14) to units of 2**7 m/cs.
+    from_kpip1_m_per_cs = 2.0**-14 * 0.0128 * 2.0**7
+    assert math.isclose(PIPA_SCALE_MS, from_kpip1_m_per_cs * 100.0)  # m/cs -> m/s
+    assert math.isclose(PIPA_SCALE_MS, 0.01)
 
 
 def test_cdu_scale_factor_matches_15_bit_counter() -> None:
