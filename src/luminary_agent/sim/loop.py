@@ -5,22 +5,29 @@ specific force into PIPA pulses and feed them to the AGC, advance the clock (whi
 stepped mode is what actually lets the AGC execute and consume them), then log the tick.
 The loop never touches wall-time; everything time-related goes through the clock.
 
-Deliberately absent so far: the AGC-commanded throttle and the attitude feedback. The
-throttle source is a callable so the AGC-derived one (core dump of the THRUST register,
-which still needs a counts->newtons calibration) can be dropped in without touching this.
+Throttle: when a ThrottleActuator is supplied the plant thrust is whatever the AGC commands.
+Luminary strobes CHAN14 bit 4 each time it writes a new THRUST *increment* (plant/throttle.py);
+on each new strobe the loop reads the register once (a ~15 ms core dump, affordable at ~1 Hz)
+and feeds the increment to the actuator, which slews it in. Engine on/off comes from CHAN11.
+Without an actuator the `throttle` callable is used directly (tests, null baselines).
+
+Deliberately absent so far: attitude feedback (CDU angles, jets acting on the vehicle).
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from luminary_agent.agc.client import AgcClient
+from luminary_agent.agc.coredump import THRUST_REGISTER
+from luminary_agent.agc.process import AgcProcess
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.sensors import PlanarImu
+from luminary_agent.plant.throttle import ThrottleActuator
 from luminary_agent.sim.clock import SimClock, SteppedClock
 from luminary_agent.sim.frames import inertial_vector, theta_rad
 from luminary_agent.sim.recorder import Recorder
@@ -48,7 +55,11 @@ class Simulation:
         throttle: Callable[[], float] = lambda: 0.0,
         pitch_rad: float = 0.0,
         dt_s: float = DT_S,
+        actuator: ThrottleActuator | None = None,
+        read_thrust_increment: Callable[[], Awaitable[int]] | None = None,
     ) -> None:
+        if actuator is not None and read_thrust_increment is None:
+            raise ValueError("an actuator needs read_thrust_increment to hear from the AGC")
         self.client = client
         self.clock = clock
         self.state = state
@@ -60,9 +71,25 @@ class Simulation:
         self.dt_s = dt_s
         self.imu = PlanarImu()
         self.ticks = 0
+        self.actuator = actuator
+        self._read_thrust_increment = read_thrust_increment
+        self._strobes_seen = 0
+
+    async def _service_throttle(self) -> float:
+        """Fold the AGC's engine and throttle commands into the actuator; return throttle."""
+        assert self.actuator is not None and self._read_thrust_increment is not None
+        act = self.client.actuators
+        if act.engine_on != self.actuator.engine_on:
+            self.actuator.set_engine(act.engine_on)
+        if act.throttle_strobe_count != self._strobes_seen:
+            self._strobes_seen = act.throttle_strobe_count
+            self.actuator.command(await self._read_thrust_increment())
+        self.actuator.step(self.dt_s)
+        return self.actuator.throttle_fraction
 
     async def tick(self) -> dict[str, Any]:
-        control = Control(throttle=self.throttle(), pitch_rad=self.pitch_rad)
+        throttle = await self._service_throttle() if self.actuator else self.throttle()
+        control = Control(throttle=throttle, pitch_rad=self.pitch_rad)
         thrust_n, _ = self.engine.thrust_and_mdot(control.throttle)
 
         # An accelerometer senses specific force (thrust / mass), never gravity, and the PIPAs
@@ -114,3 +141,14 @@ class Simulation:
     async def run(self, duration_s: float) -> None:
         for _ in range(round(duration_s / self.dt_s)):
             await self.tick()
+
+
+def stepped_thrust_reader(agc: AgcProcess) -> Callable[[], Awaitable[int]]:
+    """Read the AGC's THRUST register (a signed thrust increment, in counts) at the pause
+    boundary of a stepped run.
+    """
+
+    async def read() -> int:
+        return (await agc.coredump()).erasable_signed(*THRUST_REGISTER)
+
+    return read

@@ -1,12 +1,15 @@
 """Lunar gravity, inverse-square in altitude above a spherical Moon.
 
-Constants per APOLLO_AGENT_PLAN.md Sec.1: mu = 4.9028e12 m^3/s^2, R = 1737.4 km.
+mu = 4.9028e12 m^3/s^2. R is Luminary's own Moon radius, RSUBM = 1,738,090 m ("EQUATORIAL MOON
+RADIUS", CONTROLLED_CONSTANTS/504RM), not the 1,737.4 km mean radius: the flight software
+measures altitude above a sphere of exactly this radius, so a plant with a different surface
+would disagree with the AGC about where the ground is (690 m here) at touchdown.
 """
 
 from __future__ import annotations
 
 MU_MOON = 4.9028e12  # m^3/s^2
-R_MOON = 1_737_400.0  # m
+R_MOON = 1_738_090.0  # m
 
 
 def g(altitude_m: float) -> float:
