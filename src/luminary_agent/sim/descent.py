@@ -37,6 +37,7 @@ from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.surface import downrange_error_m, horizontal_speed_relative_to_surface
 from luminary_agent.plant.throttle import ThrottleActuator
+from luminary_agent.scenarios.dispersions import Dispersion
 from luminary_agent.sim.clock import SteppedClock
 from luminary_agent.sim.frames import LunarFrame
 from luminary_agent.sim.landing_scenario import DescentScenario, LandingSetup
@@ -91,6 +92,7 @@ def _make_sim(
     state: PlanarState,
     t_offset_s: float,
     recorder: Recorder | None,
+    engine: DescentEngine | None = None,
 ) -> Simulation:
     return Simulation(
         client,
@@ -103,6 +105,7 @@ def _make_sim(
         actuator=ThrottleActuator(),
         read_guidance_sample=stepped_guidance_reader(agc, symbols),
         t_offset_s=t_offset_s,
+        engine=engine,
     )
 
 
@@ -180,8 +183,10 @@ async def run_descent(
     max_sim_s: float = 900.0,
     on_second: Callable[[Simulation, CoreDump], None] | None = None,
     checkpoint: tuple[float, Path] | None = None,
+    dispersion: Dispersion | None = None,
 ) -> DescentResult:
-    """`on_second`, if given, is called once per simulated second with the plant and a fresh
+    """`dispersion` makes the plant differ from what the AGC was told (scenarios/dispersions.py).
+    `on_second`, if given, is called once per simulated second with the plant and a fresh
     core dump -- the hook for comparing the AGC's belief with the plant's truth. `checkpoint` =
     (plant time in s since the epoch, path) saves a resumable checkpoint when that time passes.
     """
@@ -192,11 +197,12 @@ async def run_descent(
     # The plant coasted while only the crew was talking to the AGC: catch it up.
     dump = await agc.coredump()
     elapsed_s = dump.clock_cs / 100.0 - epoch_s
-    state = coast(setup.scenario.start_state, elapsed_s)
+    disp = dispersion or Dispersion()
+    state = coast(disp.apply(setup.scenario.start_state), elapsed_s, disp.engine())
 
     clock = SteppedClock(agc)
     await clock.start()
-    sim = _make_sim(agc, client, symbols, setup, clock, state, elapsed_s, recorder)
+    sim = _make_sim(agc, client, symbols, setup, clock, state, elapsed_s, recorder, disp.engine())
     return await _fly(
         agc, client, symbols, setup, sim, clock, elapsed_s, max_sim_s, None, notes,
         on_second, checkpoint,
@@ -225,6 +231,7 @@ async def save_checkpoint(
                 "t_plant_s": sim.t_offset_s + sim.clock.sim_time_s,
                 "actuator": [a.counts, a.pending, a.engine_on],
                 "pitch_rad": sim.pitch_rad,
+                "thrust_scale": sim.engine.f_max_n / DescentEngine().f_max_n,
                 "lateral": [sim.z_m, sim.zdot_ms, sim.normal_fraction],
                 "stamp_seen": sim._stamp_seen,
                 "ticks": sim.ticks,
@@ -260,8 +267,9 @@ async def resume_descent(
     clock = SteppedClock(agc)
     await clock.start()
     h, x, hdot, xdot, mass = saved["plant"]
+    disp = Dispersion(thrust_scale=saved.get("thrust_scale", 1.0))
     sim = _make_sim(agc, client, symbols, setup, clock, PlanarState(h, x, hdot, xdot, mass),
-                    saved["t_plant_s"], recorder)  # fmt: skip
+                    saved["t_plant_s"], recorder, disp.engine())  # fmt: skip
     assert sim.actuator is not None
     sim.actuator.counts, sim.actuator.pending, sim.actuator.engine_on = saved["actuator"]
     sim.pitch_rad = saved["pitch_rad"]

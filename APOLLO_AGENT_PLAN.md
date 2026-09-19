@@ -650,6 +650,14 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       vector, altitude grid, instrument readouts, play/pause, 0.5-20x, scrubber; 1x default = normal
       speed replay of the saved log, no AGC needed). Terrain is a cosmetic profile; ground truth is
       the h = 0 line. Not yet: real terrain from a scenario, AGC/DSKY panel, alarms timeline.
+      **Phase 3 started:** `scenarios/dispersions.py` (seeded truth-vs-belief dispersions, 3 tiers),
+      `eval/score.py` (judged from plant state only), `eval/run_null.py` (NullAgent = pure
+      Luminary, one scored JSON line per episode). **First finding:** without a landing-radar
+      model, the AGC never learns a start-state error, so it is brutally sensitive -- a 0.32 m/s
+      radial velocity error made pure Luminary hover at 406 m until propellant ran out; 1 m/s
+      crashed 850 m short at 42 m/s; 2 m/s crashed 7.9 km short. ~700 m per m/s. Tiers are scaled
+      accordingly; a landing-radar/LR-altitude channel (which is also the Apollo-11 decision
+      scenario, 2.3) is the next plant feature for tiers where the null baseline must not just fail.
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,
