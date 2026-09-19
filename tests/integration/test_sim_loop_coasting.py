@@ -17,7 +17,7 @@ import pytest
 from luminary_agent.agc.build import listing_path
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.process import AgcProcess, artifacts_present
-from luminary_agent.agc.registers import REG_PIPAX, REG_PIPAZ
+from luminary_agent.agc.registers import REG_PIPAX, REG_PIPAY
 from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import load_symbols
 from luminary_agent.plant.discretes import Discretes
@@ -56,9 +56,7 @@ def test_coasting_episode_is_recorded_and_the_agc_stays_quiet(tmp_path: Path) ->
                         client,
                         clock,
                         PlanarState(h0, 0.0, 0.0, v_circ, 15_000.0),
-                        # Axis assignment is undecided until REFSMMAT exists (sub-gate 1b);
-                        # with zero thrust no pulses are emitted so the choice is moot here.
-                        PipaAxes(vertical=REG_PIPAX, horizontal=REG_PIPAZ),
+                        PipaAxes(x=REG_PIPAX, y=REG_PIPAY),
                         recorder=rec,
                     )
                     await sim.run(3.0)

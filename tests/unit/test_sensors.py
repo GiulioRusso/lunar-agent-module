@@ -63,8 +63,8 @@ def test_negative_acceleration_emits_negative_pulses() -> None:
 def test_planar_imu_samples_independent_axes() -> None:
     imu = PlanarImu()
     v_pulses, h_pulses, cdu_pulses = imu.sample(
-        specific_force_vertical_ms2=10.0,
-        specific_force_horizontal_ms2=0.0,
+        specific_force_x_ms2=10.0,
+        specific_force_y_ms2=0.0,
         pitch_rate_rad_s=0.0,
         dt_s=1.0,
     )

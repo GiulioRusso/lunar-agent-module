@@ -22,17 +22,18 @@ from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.sensors import PlanarImu
 from luminary_agent.sim.clock import SimClock, SteppedClock
+from luminary_agent.sim.frames import inertial_vector, theta_rad
 from luminary_agent.sim.recorder import Recorder
 
 
 @dataclass(frozen=True)
 class PipaAxes:
-    """Which AGC PIPA register carries each plant axis. Required, with no default: the
-    mapping depends on REFSMMAT (the stable-member frame), which is sub-gate 1b.
+    """Which AGC PIPA register carries each inertial in-plane axis. With REFSMMAT = identity
+    the stable member is the MCI frame (sim/frames.py): X -> PIPAX, Y -> PIPAY.
     """
 
-    vertical: int
-    horizontal: int
+    x: int
+    y: int
 
 
 class Simulation:
@@ -64,19 +65,22 @@ class Simulation:
         control = Control(throttle=self.throttle(), pitch_rad=self.pitch_rad)
         thrust_n, _ = self.engine.thrust_and_mdot(control.throttle)
 
-        # An accelerometer senses specific force (thrust / mass), never gravity.
-        sf_vertical = thrust_n * math.cos(control.pitch_rad) / self.state.mass_kg
-        sf_horizontal = -thrust_n * math.sin(control.pitch_rad) / self.state.mass_kg
+        # An accelerometer senses specific force (thrust / mass), never gravity, and the PIPAs
+        # sit on an inertially-fixed stable member: rotate the local (radial, tangential)
+        # thrust acceleration into MCI axes at the pre-step angle.
+        sf_radial = thrust_n * math.cos(control.pitch_rad) / self.state.mass_kg
+        sf_tangential = -thrust_n * math.sin(control.pitch_rad) / self.state.mass_kg
+        sf_x, sf_y, _ = inertial_vector(sf_radial, sf_tangential, theta_rad(self.state))
         self.state = step(self.state, control, self.engine, self.dt_s)
 
-        pulses_v, pulses_h, _ = self.imu.sample(sf_vertical, sf_horizontal, 0.0, self.dt_s)
-        await self.client.send_pipa_pulses(self.pipa_axes.vertical, pulses_v)
-        await self.client.send_pipa_pulses(self.pipa_axes.horizontal, pulses_h)
+        pulses_x, pulses_y, _ = self.imu.sample(sf_x, sf_y, 0.0, self.dt_s)
+        await self.client.send_pipa_pulses(self.pipa_axes.x, pulses_x)
+        await self.client.send_pipa_pulses(self.pipa_axes.y, pulses_y)
 
         await self.clock.advance(self.dt_s)
         self.ticks += 1
 
-        record = self._record(thrust_n, (pulses_v, pulses_h))
+        record = self._record(thrust_n, (pulses_x, pulses_y))
         if self.recorder is not None:
             self.recorder.tick(record)
         return record

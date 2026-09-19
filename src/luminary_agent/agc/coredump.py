@@ -50,6 +50,16 @@ class CoreDump:
     def erasable_signed(self, bank: int, word: int) -> int:
         return decode_agc_word(self.erasable[bank][word])
 
+    def ecadr_words(self, ecadr: int, count: int) -> list[int]:
+        """`count` raw words of erasable memory starting at `ecadr` (bank*0400 + offset)."""
+        bank, offset = divmod(ecadr, WORDS_PER_BANK)
+        return [self.erasable[bank][offset + i] for i in range(count)]
+
+    @property
+    def clock_cs(self) -> int:
+        """AGC clock TIME2:TIME1 in centiseconds (erasable 024/025)."""
+        return self.erasable[0][0o24] * 0o40000 + self.erasable[0][0o25]
+
     @property
     def agc_time_s(self) -> float:
         """Simulated AGC time, from the cycle counter -- unlike TIME1/TIME2 (10 ms ticks)

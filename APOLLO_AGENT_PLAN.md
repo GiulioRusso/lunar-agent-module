@@ -438,8 +438,37 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       by anything we send (present at 0.1 s of AGC time, before any I/O). Fix is what a crew does
       after power-up: `V36E` fresh start (`SteppedDsky.fresh_start`). "No alarms" for every later
       gate therefore means *no alarm after a fresh start*. Left MODREG = -0 (fresh-start mode);
-      P27 accepts it. **Open design choice recorded, not made:** which PIPA register carries which
-      plant axis depends on REFSMMAT, so `PipaAxes` is a required argument with no default.
+      P27 accepts it. **Decided (was open): REFSMMAT = identity**, so the stable member *is* the
+      Moon-centred inertial frame and the PIPAs measure specific force along inertial X/Y
+      (`sim/frames.py`: orbit in the X-Y plane, +X = local vertical at t0, +Y = direction of
+      travel). This also corrected a design error: the IMU model had split specific force into
+      local vertical/horizontal, but a stable-member accelerometer is inertial — the local
+      vertical rotates as the vehicle moves along its orbit. `PipaAxes(x=PIPAX, y=PIPAY)`.
+      **Sub-gate 1b progress.** DONE and verified against the flight software: a lunar-sphere
+      LM state vector loads through P27 (`agc/state_vector.py`, `agc/scaling.py`) and Luminary's
+      own `INTWAKEU` installs it — read back from the permanent `RRECTLEM/VRECTLEM/TETLEM`, never
+      written by us. Load flag is `-2` (`077775`: negative = LM, |2| = lunar sphere); scales are
+      position m B-27, velocity m/cs B-5, time cs B-28. The DP encoder is validated against
+      constants the assembler itself wrote (golden vectors from a real yaYUL listing, including a
+      negative), not against memory of the format. Scale conventions settled from flight-software
+      arithmetic rather than comments (which disagreed): **`RLS` is stored B-27** (P57 does
+      `VSL2` before `R-TO-RP` "gets RLS B-27"; P52LS undoes it with `VSR2`); `REFSMMAT` elements
+      are stored halved (B1 — the only reading that lets a unit element fit).
+      **STILL TO DO for 1b, and bigger than the ledger first said:**
+      7. **The W-matrix pad loads.** `TLAND` and every braking/approach-phase *guidance target*
+         (`RBRFG`, `VBRFG`, `ABRFG`, `JBRFG`, `RAPFG`, …) plus the throttle limits (`LOWCRIT`,
+         `HIGHCRIT`, …) are mission pad loads (128 words, EBANK 5) — zero after a fresh start,
+         which means P63 would aim at the origin. The repo has a documented catalogue with
+         values, units and scale factors: `Luminary069/PADLOADS.agc` (43 landing entries).
+         **Caveat to keep honest:** that is Luminary *69* — Apollo 10's software; Apollo 11's
+         values differ. Same guidance family, so it is a consistent nominal scenario, but it is
+         not "Apollo 11's pad load" and must not be described as one. → `agc/padloads.py`, parsed
+         from that file, tested against it.
+      8. `REFSMMAT` + `REFSMFLG` (read-modify-write of `FLAGWRD3`), `RLS` and the Moon-orientation
+         constants (`RP-TO-R` reduces to identity for a ~10 min horizon with zero libration:
+         residual ~2 mrad from lunar rotation, below plant resolution).
+      Useful oracle found: `V06N89`/`V06N43` make the flight software convert `RLS` / position
+      back to lat-long-altitude, so a wrong scale shows up as an absurd altitude on the DSKY.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector

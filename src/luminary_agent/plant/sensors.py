@@ -50,24 +50,25 @@ class PulseCounter:
 
 @dataclass
 class PlanarImu:
-    """The two PIPAs and one CDU axis a 3-DoF planar plant needs: vertical and
-    horizontal specific force, and pitch angle.
+    """The two in-plane PIPAs and one CDU axis a 3-DoF planar plant needs. The PIPAs sit on
+    the stable member, so they measure specific force in *inertial* axes (see sim/frames.py),
+    not along the vehicle's local vertical -- that rotates as it moves along its orbit.
     """
 
-    pipa_vertical: PulseCounter = field(default_factory=lambda: PulseCounter(PIPA_SCALE_MS))
-    pipa_horizontal: PulseCounter = field(default_factory=lambda: PulseCounter(PIPA_SCALE_MS))
+    pipa_x: PulseCounter = field(default_factory=lambda: PulseCounter(PIPA_SCALE_MS))
+    pipa_y: PulseCounter = field(default_factory=lambda: PulseCounter(PIPA_SCALE_MS))
     cdu_pitch: PulseCounter = field(default_factory=lambda: PulseCounter(CDU_SCALE_RAD))
 
     def sample(
         self,
-        specific_force_vertical_ms2: float,
-        specific_force_horizontal_ms2: float,
+        specific_force_x_ms2: float,
+        specific_force_y_ms2: float,
         pitch_rate_rad_s: float,
         dt_s: float,
     ) -> tuple[int, int, int]:
-        """One sensor sample over `dt_s`: returns (pipa_v_pulses, pipa_h_pulses, cdu_pulses)."""
+        """One sensor sample over `dt_s`: returns (pipa_x_pulses, pipa_y_pulses, cdu_pulses)."""
         return (
-            self.pipa_vertical.pulses_for(specific_force_vertical_ms2 * dt_s),
-            self.pipa_horizontal.pulses_for(specific_force_horizontal_ms2 * dt_s),
+            self.pipa_x.pulses_for(specific_force_x_ms2 * dt_s),
+            self.pipa_y.pulses_for(specific_force_y_ms2 * dt_s),
             self.cdu_pitch.pulses_for(pitch_rate_rad_s * dt_s),
         )
