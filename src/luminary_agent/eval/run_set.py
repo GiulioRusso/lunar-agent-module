@@ -27,6 +27,8 @@ async def one(tier: int, seed: int, port: int, out: Path) -> dict[str, object]:
             stdout=asyncio.subprocess.PIPE,
         )  # fmt: skip
         stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"episode tier {tier} seed {seed} failed (see its traceback above)")
         stem.with_suffix(".json").write_text(stdout.decode().strip().splitlines()[-1])
         build(Path(str(stem) + ".jsonl.gz"), stem.with_suffix(".html"))
     return json.loads(stem.with_suffix(".json").read_text())  # type: ignore[no-any-return]
