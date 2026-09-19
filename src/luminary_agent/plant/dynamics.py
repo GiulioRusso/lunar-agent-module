@@ -1,4 +1,5 @@
-"""3-DoF planar descent dynamics: altitude, downrange, their rates, and vehicle mass.
+"""3-DoF planar descent dynamics over a spherical Moon: altitude, downrange, their rates,
+and vehicle mass.
 
 Deliberately the *first* plant (APOLLO_AGENT_PLAN.md Sec.5, Phase 1, and Sec.9's trap
 "6-DoF before 3-DoF closes"): point-mass, thrust vector set directly by a commanded
@@ -6,10 +7,14 @@ pitch angle, no attitude dynamics. This is enough to close the loop against Lumi
 throttle/jet channels; 6-DoF with RCS jet torques is a later, additive step once this
 is validated against analytic cases (see tests/unit/test_dynamics.py).
 
-State is (h, x, hdot, xdot, mass): altitude above the surface, downrange position,
-their rates, and current vehicle mass. Integrated with fixed-step RK4 at 50 Hz, control
-(throttle, pitch) held constant over the step -- a zero-order hold, matching a real
-digital control loop running at a fixed rate.
+State is (h, x, hdot, xdot, mass): altitude above the surface, downrange arc length along
+the surface, vertical velocity, *tangential* velocity, and current vehicle mass. The Moon is
+a sphere, not a plane: at PDI the horizontal speed is ~1.7 km/s and the centrifugal term
+v^2/r (~1.66 m/s^2) nearly cancels lunar gravity (~1.62 m/s^2), so a flat-surface model
+would plunge a vehicle that is in fact nearly in orbit.
+
+Integrated with fixed-step RK4 at 50 Hz, control (throttle, pitch) held constant over the
+step -- a zero-order hold, matching a real digital control loop running at a fixed rate.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from luminary_agent.plant.gravity import g
+from luminary_agent.plant.gravity import R_MOON, g
 from luminary_agent.plant.propulsion import DescentEngine
 
 SIM_HZ = 50.0
@@ -29,7 +34,7 @@ class PlanarState:
     h_m: float  # altitude above the surface
     x_m: float  # downrange position
     hdot_ms: float  # vertical velocity, positive up
-    xdot_ms: float  # horizontal velocity, positive in the direction of travel
+    xdot_ms: float  # tangential velocity, positive in the direction of travel
     mass_kg: float
 
 
@@ -42,15 +47,22 @@ class Control:
 def derivative(state: PlanarState, control: Control, engine: DescentEngine) -> PlanarState:
     """dState/dt as a PlanarState-shaped tuple of rates (reusing the dataclass as a
     convenient 5-vector -- these fields are rates, not state, only for this function).
+
+    Polar form about the Moon's centre, r = R + h, vt = tangential speed:
+        h'  = hdot
+        x'  = vt * R / r                      (x is arc length at the surface)
+        hdot' = vt^2/r - g(h) + a_radial      (centrifugal relief)
+        vt' = -hdot * vt / r + a_tangential   (angular momentum: d(r*vt)/dt = r*a_t)
     """
     thrust_n, mdot = engine.thrust_and_mdot(control.throttle)
-    thrust_vertical = thrust_n * math.cos(control.pitch_rad)
-    thrust_horizontal = thrust_n * math.sin(control.pitch_rad)
+    a_radial = thrust_n * math.cos(control.pitch_rad) / state.mass_kg
+    a_tangential = -thrust_n * math.sin(control.pitch_rad) / state.mass_kg
+    r = R_MOON + state.h_m
     return PlanarState(
         h_m=state.hdot_ms,
-        x_m=state.xdot_ms,
-        hdot_ms=thrust_vertical / state.mass_kg - g(state.h_m),
-        xdot_ms=-thrust_horizontal / state.mass_kg,
+        x_m=state.xdot_ms * R_MOON / r,
+        hdot_ms=state.xdot_ms**2 / r - g(state.h_m) + a_radial,
+        xdot_ms=-state.hdot_ms * state.xdot_ms / r + a_tangential,
         mass_kg=-mdot,
     )
 

@@ -10,6 +10,7 @@ connection is therefore enough for both DSKY keying and reading back the display
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 
 from luminary_agent.agc.actuators import ActuatorState
 from luminary_agent.agc.channels import decode_packet, encode_packet
@@ -60,6 +61,13 @@ class AgcClient:
     async def write_channel(self, channel: int, value: int, u_bit: bool = False) -> None:
         assert self._writer is not None
         self._writer.write(encode_packet(channel, value, u_bit))
+        await self._writer.drain()
+
+    async def write_channels(self, words: Mapping[int, int]) -> None:
+        """Write several channels at once (e.g. Discretes.channel_words())."""
+        assert self._writer is not None
+        for channel, value in words.items():
+            self._writer.write(encode_packet(channel, value))
         await self._writer.drain()
 
     async def press_key(self, key: str) -> None:

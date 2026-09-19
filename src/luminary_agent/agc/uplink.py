@@ -17,26 +17,22 @@ external/virtualagc/Luminary099/UPDATE_PROGRAM.agc and confirmed against a live 
 Data are unsigned octal (noun 01), <= 5 digits. V33E after the last entry is the "verify"
 that makes P27 actually store. P27 is only accepted in P00; elsewhere it raises OPERATOR ERROR.
 
-Every keystroke is followed by stepping the AGC: a keycode waits in channel 015 until
-Luminary's KEYRUPT reads it and the next write would overwrite it, so keys cannot be
-fired back-to-back (found the hard way -- see tests/integration/test_stepped_mode.py).
+Keystrokes go through SteppedDsky, which steps the AGC after each one (see there for why).
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Sequence
 
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.process import AgcProcess
+from luminary_agent.agc.stepped_dsky import SteppedDsky
 
 MAX_V71_COMPONENTS = 20  # UPDATE_PROGRAM.agc: UP21 = 21 = "max no of components + 1"
 MAX_V72_COMPONENTS = 19
 MAX_V71_WORDS = MAX_V71_COMPONENTS - 2
 MAX_V72_PAIRS = (MAX_V72_COMPONENTS - 1) // 2
 
-KEY_STEPS = 3_000  # ~50 ms of AGC time: enough for KEYRUPT to consume a keycode
-ENTER_STEPS = 8_000  # ENTR triggers display + P27 bookkeeping
 VERIFY_STEPS = 30_000  # V33E performs the actual store (restart-protected, so slower)
 
 
@@ -57,22 +53,7 @@ class Updater:
             raise UpdateError("P27 loads are driven by stepping; use a stepped AgcProcess")
         self.agc = agc
         self.client = client
-
-    async def _key(self, key: str, steps: int = KEY_STEPS) -> None:
-        await self.client.press_key(key)
-        await self.agc.step(steps)
-        await asyncio.sleep(0.005)  # let the socket reader drain any display updates
-
-    async def _enter(self, value: int) -> None:
-        for digit in f"{value:o}":
-            await self._key(digit)
-        await self._key("ENTR", ENTER_STEPS)
-
-    async def _verb(self, verb: int) -> None:
-        await self._key("VERB")
-        for digit in str(verb):
-            await self._key(digit)
-        await self._key("ENTR", ENTER_STEPS)
+        self.dsky = SteppedDsky(agc, client)
 
     async def v71(self, ecadr: int, words: Sequence[int]) -> None:
         """Load `words` into consecutive erasable words starting at `ecadr`."""
@@ -84,11 +65,11 @@ class Updater:
             raise UpdateError("a V71 block may not run past the end of its erasable bank")
         for w in words:
             _check_word(w, "data word")
-        await self._verb(71)
-        await self._enter(len(words) + 2)
-        await self._enter(ecadr)
+        await self.dsky.verb(71)
+        await self.dsky.enter_octal(len(words) + 2)
+        await self.dsky.enter_octal(ecadr)
         for w in words:
-            await self._enter(w)
+            await self.dsky.enter_octal(w)
         await self._verify()
 
     async def v72(self, pairs: Sequence[tuple[int, int]]) -> None:
@@ -99,15 +80,14 @@ class Updater:
             if not 0 <= ecadr <= 0o3777:
                 raise UpdateError(f"ECADR {ecadr:#o} out of range")
             _check_word(value, "data word")
-        await self._verb(72)
-        await self._enter(2 * len(pairs) + 1)
+        await self.dsky.verb(72)
+        await self.dsky.enter_octal(2 * len(pairs) + 1)
         for ecadr, value in pairs:
-            await self._enter(ecadr)
-            await self._enter(value)
+            await self.dsky.enter_octal(ecadr)
+            await self.dsky.enter_octal(value)
         await self._verify()
 
     async def _verify(self) -> None:
-        for k in ("VERB", "3", "3"):
-            await self._key(k)
-        await self._key("ENTR", VERIFY_STEPS)
+        await self.dsky.verb(33)
+        await self.agc.step(VERIFY_STEPS)
         await self.agc.step(VERIFY_STEPS)  # let the job finish and P27 exit

@@ -14,6 +14,7 @@ import pytest
 from luminary_agent.agc.build import listing_path
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.process import AgcProcess, artifacts_present
+from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import load_symbols
 from luminary_agent.agc.uplink import Updater
 
@@ -67,10 +68,8 @@ def test_p27_refuses_outside_p00_and_writes_nothing(tmp_path: Path) -> None:
             async with AgcClient(port=19823) as client:
                 up = Updater(agc, client)
                 assert await modreg(agc) == 0  # starts in P00
-                await up._verb(37)
-                for digit in "25":
-                    await up._key(digit)
-                await up._key("ENTR", 8_000)
+                await SteppedDsky(agc, client).verb(37)
+                await SteppedDsky(agc, client).enter_decimal(25)  # V37 takes a decimal program
                 await agc.step(60_000)
                 assert await modreg(agc) == 25, "precondition: failed to leave P00"
 

@@ -5,7 +5,7 @@ to validate the plant against closed-form cases before it's ever wired to the AG
 import math
 
 from luminary_agent.plant.dynamics import Control, PlanarState, derivative, step
-from luminary_agent.plant.gravity import g
+from luminary_agent.plant.gravity import MU_MOON, R_MOON, g
 from luminary_agent.plant.propulsion import DescentEngine
 
 ENGINE = DescentEngine()
@@ -24,7 +24,7 @@ def _state(
 def test_free_fall_derivative_is_pure_gravity() -> None:
     s = _state()
     d = derivative(s, Control(throttle=0.0, pitch_rad=0.0), ENGINE)
-    assert d.hdot_ms == -g(s.h_m)
+    assert d.hdot_ms == -g(s.h_m)  # at rest tangentially there is no centrifugal term
     assert d.xdot_ms == 0.0
     assert d.mass_kg == 0.0  # no propellant burned with the engine off
 
@@ -50,7 +50,8 @@ def test_hovering_thrust_exactly_cancels_weight() -> None:
 def test_full_horizontal_pitch_only_decelerates_downrange_velocity() -> None:
     s = _state(h=500.0, xdot=50.0, mass=10_000.0)
     d = derivative(s, Control(throttle=0.925, pitch_rad=math.pi / 2), ENGINE)
-    assert math.isclose(d.hdot_ms, -g(s.h_m), rel_tol=1e-9)
+    centrifugal = s.xdot_ms**2 / (R_MOON + s.h_m)
+    assert math.isclose(d.hdot_ms, centrifugal - g(s.h_m), rel_tol=1e-9)
     assert d.xdot_ms < 0.0  # thrust opposes downrange velocity
 
 
@@ -69,3 +70,29 @@ def test_zero_throttle_conserves_mass_over_many_steps() -> None:
     for _ in range(100):
         s = step(s, control, ENGINE)
     assert s.mass_kg == 15_000.0
+
+
+def test_circular_orbit_stays_circular() -> None:
+    """The check a flat-Moon model fails: at circular speed sqrt(mu/r), centrifugal relief
+    exactly cancels gravity, so altitude must hold and downrange must advance at v * R/r.
+    """
+    h = 15_000.0
+    r = R_MOON + h
+    v_circ = math.sqrt(MU_MOON / r)
+    s = _state(h=h, xdot=v_circ)
+    control = Control(throttle=0.0, pitch_rad=0.0)
+    for _ in range(50 * 60):  # 60 s
+        s = step(s, control, ENGINE)
+    assert math.isclose(s.h_m, h, abs_tol=0.5)
+    assert math.isclose(s.xdot_ms, v_circ, rel_tol=1e-6)
+    assert math.isclose(s.x_m, v_circ * (R_MOON / r) * 60.0, rel_tol=1e-6)
+
+
+def test_flat_moon_would_have_failed_the_orbit_check() -> None:
+    """Documents why the polar form exists: at PDI speed the vertical acceleration is
+    ~zero, not -g. Without the v^2/r term this would read ~ -1.6 m/s^2.
+    """
+    h = 15_000.0
+    v_pdi = math.sqrt(MU_MOON / (R_MOON + h))
+    d = derivative(_state(h=h, xdot=v_pdi), Control(0.0, 0.0), ENGINE)
+    assert abs(d.hdot_ms) < 1e-6

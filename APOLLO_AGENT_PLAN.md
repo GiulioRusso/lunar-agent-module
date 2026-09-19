@@ -356,7 +356,12 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
 - [ ] Kill: no working `yaAGC` on any local path by end of week 2. (moot — closed week 1)
 
 ### Phase 1 — Plant and instruments (weeks 2–4) · Track A ← the real work
-- [x] 3-DoF planar descent first (h, downrange, ḣ, v̇), RK4, 50 Hz (`plant/dynamics.py`)
+- [x] 3-DoF planar descent first (h, downrange, ḣ, v̇), RK4, 50 Hz (`plant/dynamics.py`).
+      **Audit correction:** the first version was a *flat-Moon* model, which is wrong exactly where
+      it matters. At PDI speed (~1.7 km/s) centrifugal relief v²/r ≈ 1.66 m/s² nearly cancels
+      lunar gravity (1.62), so a flat plant plunges a vehicle that is nearly in orbit. Now polar
+      about the Moon's centre (same state fields: tangential velocity, arc-length downrange).
+      Guarded by a circular-orbit test — the check a flat model cannot pass.
 - [x] DPS: throttleable 10–60% + fixed ~92.5% region, `ṁ = F/(g₀·Isp)`, Isp ≈ 311 s
       (`plant/propulsion.py`; masses/thrust are placeholder Apollo-11-class numbers,
       pending Phase 2 citations)
@@ -423,6 +428,18 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       5. **CDU registers seeded** to the initial gimbal angles (2^15 counts/rev; 4-6k pulses through
          yaAGC's rate-limited CDU FIFO — fine in stepped mode).
       6. **`R51P63` prompt** at `ASTNRET` — `ENTER` continues (no star sightings needed).
+      **Status (sub-gate 1a PASSED):** `plant/discretes.py` written from the channel
+      documentation and *verified against the flight software* — Luminary's T4RUPT `IMUMON`
+      mirrors what we write into `IMODES30` (polarity and bit positions confirmed live).
+      `sim/loop.py` runs plant + IMU → AGC → clock → recorder; a 3 s coast at PDI speed holds
+      altitude to <1 m, records 150 ticks, keeps plant/AGC time within 50 ms, raises no alarm.
+      **Finding — cold boot raises alarm 1107** (phase-table failure): erasable starts zeroed, so
+      the first restart finds an invalid phase table. FAILREG holds it until cleared. Not caused
+      by anything we send (present at 0.1 s of AGC time, before any I/O). Fix is what a crew does
+      after power-up: `V36E` fresh start (`SteppedDsky.fresh_start`). "No alarms" for every later
+      gate therefore means *no alarm after a fresh start*. Left MODREG = -0 (fresh-start mode);
+      P27 accepts it. **Open design choice recorded, not made:** which PIPA register carries which
+      plant axis depends on REFSMMAT, so `PipaAxes` is a required argument with no default.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector
