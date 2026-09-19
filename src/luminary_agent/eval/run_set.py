@@ -1,6 +1,7 @@
 """Run a set of NullAgent episodes in parallel and print a results table.
 
     python -m luminary_agent.eval.run_set --tiers 1 2 3 --seeds 0 1 --workers 3
+    python -m luminary_agent.eval.run_set --set dev --out results/logs/dev   # or --set frozen
 
 Each episode takes ~20 min of CPU (a full powered descent through the real Luminary rope);
 episodes are independent processes. Per episode it writes <out>/t{tier}_s{seed}.{json,jsonl.gz,html}
@@ -15,6 +16,8 @@ import json
 import sys
 from pathlib import Path
 
+from luminary_agent.eval.report import summarize
+from luminary_agent.eval.sets import SETS
 from luminary_agent.viz.replay import build
 
 
@@ -34,10 +37,9 @@ async def one(tier: int, seed: int, port: int, out: Path) -> dict[str, object]:
     return json.loads(stem.with_suffix(".json").read_text())  # type: ignore[no-any-return]
 
 
-async def main(tiers: list[int], seeds: list[int], workers: int, out: Path) -> None:
+async def main(jobs: list[tuple[int, int]], workers: int, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(workers)
-    jobs = [(t, s) for t in tiers for s in seeds]
 
     async def guarded(i: int, t: int, s: int) -> dict[str, object]:
         async with sem:
@@ -55,7 +57,8 @@ async def main(tiers: list[int], seeds: list[int], workers: int, out: Path) -> N
 
     results = await asyncio.gather(*(guarded(i, t, s) for i, (t, s) in enumerate(jobs)))
     safe = sum(1 for r in results if r["score"]["safe"])  # type: ignore[index, misc]
-    print(f"\n{safe}/{len(results)} safe landings; replays: {out}/*.html")
+    print(f"\n{safe}/{len(results)} safe landings; replays: {out}/*.html\n")
+    print(summarize(out))
 
 
 if __name__ == "__main__":
@@ -64,5 +67,9 @@ if __name__ == "__main__":
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--out", type=Path, default=Path("results/logs/demo"))
+    ap.add_argument(
+        "--set", choices=sorted(SETS), help="a frozen or dev set instead of tiers/seeds"
+    )
     a = ap.parse_args()
-    asyncio.run(main(a.tiers, a.seeds, a.workers, a.out))
+    todo = list(SETS[a.set]) if a.set else [(t, s) for t in a.tiers for s in a.seeds]
+    asyncio.run(main(todo, a.workers, a.out))
