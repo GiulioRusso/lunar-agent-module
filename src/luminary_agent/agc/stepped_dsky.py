@@ -12,6 +12,7 @@ selects a different program (typing 21 through an octal formatter enters 25).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.process import AgcProcess
@@ -22,15 +23,33 @@ FRESH_START_STEPS = 300_000  # V36E re-initialises erasable; ~3.5 s of AGC time 
 
 
 class SteppedDsky:
-    def __init__(self, agc: AgcProcess, client: AgcClient) -> None:
+    """`advance` replaces `agc.step` as the way time passes after each key. A closed-loop run
+    passes the simulation's own advance here so that keystrokes move the plant too; without it
+    the plant and the AGC would drift apart by ~50 ms per key pressed.
+    """
+
+    def __init__(
+        self,
+        agc: AgcProcess,
+        client: AgcClient,
+        advance: Callable[[int], Awaitable[object]] | None = None,
+    ) -> None:
         if agc.mode != "stepped":
             raise ValueError("SteppedDsky drives a stepped AgcProcess")
         self.agc = agc
         self.client = client
+        self._advance_hook = advance
+
+    async def _advance(self, steps: int) -> object:
+        # Resolved per call, not in __init__: the hook may be swapped, and a test double for the
+        # AGC need not provide `step` at all.
+        if self._advance_hook is not None:
+            return await self._advance_hook(steps)
+        return await self.agc.step(steps)
 
     async def key(self, key: str, steps: int = KEY_STEPS) -> None:
         await self.client.press_key(key)
-        await self.agc.step(steps)
+        await self._advance(steps)
         await asyncio.sleep(0.005)  # let the socket reader drain any display updates
 
     async def enter(self, digits: str) -> None:
@@ -57,4 +76,4 @@ class SteppedDsky:
         does the same and leaves FAILREG clear so later alarms are unambiguous.
         """
         await self.verb(36)
-        await self.agc.step(FRESH_START_STEPS)
+        await self._advance(FRESH_START_STEPS)

@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from luminary_agent.agc.actuators import ActuatorState
+from luminary_agent.agc.guidance import GuidanceSample
 from luminary_agent.plant.dynamics import PlanarState
 from luminary_agent.plant.propulsion import F_MAX_N
 from luminary_agent.plant.throttle import MIN_COUNTS, ThrottleActuator
@@ -34,12 +35,17 @@ class FakeClock:
         self.sim_time_s += dt_s
 
 
-def _sim(client: FakeClient, reads: list[int], increments: list[int]) -> Simulation:
-    async def reader() -> int:
-        reads.append(1)
-        return increments[len(reads) - 1]
+def _sim(
+    client: FakeClient, script: list[GuidanceSample], every: int = 5
+) -> tuple[Simulation, list[int]]:
+    """A simulation whose guidance reader plays back `script` (repeating the last sample)."""
+    reads: list[int] = []
 
-    return Simulation(
+    async def reader() -> GuidanceSample:
+        reads.append(1)
+        return script[min(len(reads) - 1, len(script) - 1)]
+
+    sim = Simulation(
         client,  # type: ignore[arg-type]
         FakeClock(),
         PlanarState(15_000.0, 0.0, 0.0, 1_680.0, 15_000.0),
@@ -47,82 +53,120 @@ def _sim(client: FakeClient, reads: list[int], increments: list[int]) -> Simulat
         PLANE_IS_XY,
         IDENTITY,
         actuator=ThrottleActuator(),
-        read_thrust_increment=reader,
+        read_guidance_sample=reader,
+        guidance_every_ticks=every,
     )
+    return sim, reads
 
 
 def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def test_no_thrust_until_the_agc_turns_the_engine_on() -> None:
-    client, reads = FakeClient(), list[int]()
-    sim = _sim(client, reads, [])
-    rec = run(sim.tick())
-    assert rec["thrust_n"] == 0.0 and reads == []
+def _ticks(sim: Simulation, n: int) -> list[float]:
+    async def go() -> list[float]:
+        return [(await sim.tick())["thrust_n"] for _ in range(n)]
+
+    return run(go())  # type: ignore[no-any-return]
+
+
+def test_no_thrust_and_no_guidance_reads_until_the_agc_lights_the_engine() -> None:
+    client = FakeClient()
+    sim, reads = _sim(client, [GuidanceSample(0, None, 7)])
+    assert _ticks(sim, 10) == [0.0] * 10
+    assert reads == []
 
 
 def test_engine_on_starts_at_minimum_throttle_and_burns_propellant() -> None:
-    client, reads = FakeClient(), list[int]()
-    sim = _sim(client, reads, [])
+    client = FakeClient()
+    sim, _ = _sim(client, [GuidanceSample(0, None, 7)])
     client.actuators.engine_on = True
-    rec = run(sim.tick())
-    assert math.isclose(rec["thrust_n"], 0.10 * F_MAX_N)
+    (thrust,) = _ticks(sim, 1)
+    assert math.isclose(thrust, 0.10 * F_MAX_N)
     assert sim.state.mass_kg < 15_000.0
 
 
-def test_thrust_register_is_read_once_per_strobe_not_once_per_tick() -> None:
-    client, reads = FakeClient(), list[int]()
-    sim = _sim(client, reads, [500, 200])
+def test_guidance_is_sampled_on_a_cadence_not_every_tick() -> None:
+    client = FakeClient()
+    sim, reads = _sim(client, [GuidanceSample(0, None, 7)], every=5)
     client.actuators.engine_on = True
-
-    async def go() -> list[float]:
-        thrusts = []
-        for _ in range(5):  # no strobe yet
-            thrusts.append((await sim.tick())["thrust_n"])
-        client.actuators.throttle_strobe_count = 1  # one new AGC command
-        for _ in range(5):
-            thrusts.append((await sim.tick())["thrust_n"])
-        return thrusts
-
-    thrusts = run(go())
-    assert len(reads) == 1, "should read on the strobe edge only"
-    assert thrusts[4] == pytest.approx(thrusts[0])  # nothing changed before the strobe
-    assert thrusts[9] > thrusts[4]  # the increment slewed in afterwards
+    _ticks(sim, 20)
+    # once at ignition, then at ticks 5, 10, 15 (tick 0 is the ignition read itself)
+    assert len(reads) == 4
 
 
-def test_a_second_strobe_reads_again() -> None:
-    client, reads = FakeClient(), list[int]()
-    sim = _sim(client, reads, [300, -100])
+def test_a_new_command_stamp_applies_the_increment_once() -> None:
+    client = FakeClient()
+    sim, _ = _sim(
+        client,
+        [
+            GuidanceSample(0, None, 7),  # ignition: stamp 7 recorded, nothing applied
+            GuidanceSample(500, None, 7),  # same stamp -> same command, not re-applied
+            GuidanceSample(500, None, 9),  # new stamp -> apply +500 once
+            GuidanceSample(500, None, 9),  # ...and not again
+        ],
+        every=2,
+    )
     client.actuators.engine_on = True
-
-    async def go() -> None:
-        await sim.tick()
-        client.actuators.throttle_strobe_count = 1
-        await sim.tick()
-        client.actuators.throttle_strobe_count = 2
-        await sim.tick()
-
-    run(go())
-    assert len(reads) == 2
+    _ticks(sim, 9)
     assert sim.actuator is not None
-    # 64 counts of slew per 20 ms tick. Tick 2 takes +300 (slews 64, 236 pending); tick 3 takes
-    # -100 (136 pending) and slews 64 more: 128 counts above minimum, 72 still pending.
-    assert sim.actuator.counts == pytest.approx(MIN_COUNTS + 128)
-    assert sim.actuator.pending == pytest.approx(72)
+    total_applied = (sim.actuator.counts - MIN_COUNTS) + sim.actuator.pending
+    assert total_applied == pytest.approx(500.0)
+
+
+def test_commands_after_the_first_are_not_missed() -> None:
+    """The regression that motivated stamps: a strobe *edge* counter saw only the first
+    command(s) because CHAN14 bit 4 is latched on. Every stamp change must be applied.
+    """
+    client = FakeClient()
+    sim, _ = _sim(
+        client,
+        [
+            GuidanceSample(0, None, 1),
+            GuidanceSample(300, None, 2),
+            GuidanceSample(-100, None, 3),
+            GuidanceSample(50, None, 4),
+        ],
+        every=2,
+    )
+    client.actuators.engine_on = True
+    _ticks(sim, 9)
+    assert sim.actuator is not None
+    assert (sim.actuator.counts - MIN_COUNTS) + sim.actuator.pending == pytest.approx(250.0)
+
+
+def test_a_stale_pre_ignition_command_is_not_applied() -> None:
+    client = FakeClient()
+    sim, _ = _sim(client, [GuidanceSample(-4096, None, 5)], every=2)  # pre-ignition FLATOUT-down
+    client.actuators.engine_on = True
+    _ticks(sim, 9)
+    assert sim.actuator is not None
+    assert sim.actuator.counts == pytest.approx(MIN_COUNTS)  # not driven anywhere by a stale value
 
 
 def test_engine_off_again_cuts_thrust() -> None:
-    client, reads = FakeClient(), list[int]()
-    sim = _sim(client, reads, [])
+    client = FakeClient()
+    sim, _ = _sim(client, [GuidanceSample(0, None, 1)])
     client.actuators.engine_on = True
-    run(sim.tick())
+    _ticks(sim, 1)
     client.actuators.engine_on = False
-    assert run(sim.tick())["thrust_n"] == 0.0
+    assert _ticks(sim, 1) == [0.0]
+
+
+def test_relighting_forgets_the_previous_burns_stamp() -> None:
+    client = FakeClient()
+    sim, _ = _sim(client, [GuidanceSample(0, None, 1), GuidanceSample(200, None, 1)], every=3)
+    client.actuators.engine_on = True
+    _ticks(sim, 4)
+    client.actuators.engine_on = False
+    _ticks(sim, 1)
+    client.actuators.engine_on = True
+    _ticks(sim, 1)
+    assert sim._stamp_seen is not None
 
 
 def test_actuator_without_a_reader_is_rejected() -> None:
-    with pytest.raises(ValueError, match="read_thrust_increment"):
+    with pytest.raises(ValueError, match="read_guidance_sample"):
         Simulation(
             FakeClient(),  # type: ignore[arg-type]
             FakeClock(),
@@ -132,3 +176,51 @@ def test_actuator_without_a_reader_is_rejected() -> None:
             IDENTITY,
             actuator=ThrottleActuator(),
         )
+
+
+def _direction_sim(theta_x: float = 0.0) -> Simulation:
+    client = FakeClient()
+    return Simulation(
+        client,  # type: ignore[arg-type]
+        FakeClock(),
+        PlanarState(15_000.0, theta_x * 1_738_090.0, 0.0, 1_680.0, 15_000.0),
+        PipaAxes(x=0o37, y=0o40, z=0o41),
+        PLANE_IS_XY,
+        IDENTITY,
+    )
+
+
+def test_thrust_along_local_up_is_zero_pitch() -> None:
+    sim = _direction_sim()
+    sim._apply_direction((1.0, 0.0, 0.0))  # +X_sm = +e1 = up at theta 0
+    assert sim.pitch_rad == pytest.approx(0.0, abs=1e-12)
+
+
+def test_thrust_opposing_travel_is_positive_pitch_of_90_degrees() -> None:
+    """A retro burn: thrust points against the direction of travel. At theta = 0 travel is +e2,
+    so thrust along -e2 must decelerate the tangential velocity: pitch = +90 deg.
+    """
+    sim = _direction_sim()
+    sim._apply_direction((0.0, -1.0, 0.0))
+    assert sim.pitch_rad == pytest.approx(math.pi / 2)
+
+
+def test_direction_follows_the_local_frame_as_the_vehicle_moves() -> None:
+    """The same inertial (stable-member) direction is a different pitch at a different angle."""
+    theta = 0.3
+    sim = _direction_sim(theta_x=theta)
+    # Inertial direction that is exactly local-up at this angle:
+    sim._apply_direction((math.cos(theta), math.sin(theta), 0.0))
+    assert sim.pitch_rad == pytest.approx(0.0, abs=1e-9)
+    # ...and local retro (against travel) at this angle:
+    sim._apply_direction((math.sin(theta), -math.cos(theta), 0.0))
+    assert sim.pitch_rad == pytest.approx(math.pi / 2)
+
+
+def test_a_refsmmat_rotation_is_undone_before_pointing() -> None:
+    """SM axes are not the reference axes: direction_sm goes through REFSMMAT^T."""
+    sim = _direction_sim()
+    # SM frame rotated 90 deg about z: SM x = ref y, SM y = -ref x.
+    sim.refsmmat = ((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+    sim._apply_direction((0.0, -1.0, 0.0))  # = ref +x = up
+    assert sim.pitch_rad == pytest.approx(0.0, abs=1e-12)

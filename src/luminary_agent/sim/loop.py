@@ -6,9 +6,10 @@ stepped mode is what actually lets the AGC execute and consume them), then log t
 The loop never touches wall-time; everything time-related goes through the clock.
 
 Throttle: when a ThrottleActuator is supplied the plant thrust is whatever the AGC commands.
-Luminary strobes CHAN14 bit 4 each time it writes a new THRUST *increment* (plant/throttle.py);
-on each new strobe the loop reads the register once (a ~15 ms core dump, affordable at ~1 Hz)
-and feeds the increment to the actuator, which slews it in. Engine on/off comes from CHAN11.
+Luminary writes a new THRUST *increment* (plant/throttle.py) and stamps TTHROT with the clock; the
+loop takes a guidance sample (a ~15 ms core dump) at engine ignition and then every
+`guidance_every_ticks`, applies the increment when the stamp has changed, and re-points the
+thrust along the freshly-written UNFC/2 every time. Engine on/off comes from CHAN11.
 Without an actuator the `throttle` callable is used directly (tests, null baselines).
 
 Deliberately absent so far: attitude feedback (CDU angles, jets acting on the vehicle).
@@ -22,15 +23,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from luminary_agent.agc.client import AgcClient
-from luminary_agent.agc.coredump import THRUST_REGISTER
+from luminary_agent.agc.coredump import AGC_CYCLES_PER_SECOND
+from luminary_agent.agc.guidance import GuidanceSample, read_guidance
 from luminary_agent.agc.process import AgcProcess
+from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.lunar_orientation import Mat
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.sensors import Imu
 from luminary_agent.plant.throttle import ThrottleActuator
 from luminary_agent.sim.clock import SimClock, SteppedClock
-from luminary_agent.sim.frames import LunarFrame, mat_vec, theta_rad
+from luminary_agent.sim.frames import LunarFrame, dot, mat_vec, theta_rad
 from luminary_agent.sim.recorder import Recorder
 
 
@@ -58,10 +61,12 @@ class Simulation:
         pitch_rad: float = 0.0,
         dt_s: float = DT_S,
         actuator: ThrottleActuator | None = None,
-        read_thrust_increment: Callable[[], Awaitable[int]] | None = None,
+        read_guidance_sample: Callable[[], Awaitable[GuidanceSample]] | None = None,
+        t_offset_s: float = 0.0,
+        guidance_every_ticks: int = 25,
     ) -> None:
-        if actuator is not None and read_thrust_increment is None:
-            raise ValueError("an actuator needs read_thrust_increment to hear from the AGC")
+        if actuator is not None and read_guidance_sample is None:
+            raise ValueError("an actuator needs read_guidance_sample to hear from the AGC")
         self.client = client
         self.clock = clock
         self.state = state
@@ -76,18 +81,47 @@ class Simulation:
         self.imu = Imu()
         self.ticks = 0
         self.actuator = actuator
-        self._read_thrust_increment = read_thrust_increment
-        self._strobes_seen = 0
+        self.t_offset_s = t_offset_s  # plant time at clock time zero (epoch to run start)
+        self._read_guidance_sample = read_guidance_sample
+        self._stamp_seen: int | None = None
+        self.guidance_every_ticks = guidance_every_ticks
+
+    def _apply_direction(self, direction_sm: tuple[float, float, float]) -> None:
+        """Point the thrust along the AGC's command (perfect pointing -- see agc/guidance.py).
+
+        Stable member -> reference frame (REFSMMAT^T), then onto the plant's local axes at the
+        present angle; pitch is measured from local vertical, positive decelerating the
+        tangential velocity (plant/dynamics.py). Any out-of-plane component is dropped.
+        """
+        m = self.refsmmat
+        ref = (
+            m[0][0] * direction_sm[0] + m[1][0] * direction_sm[1] + m[2][0] * direction_sm[2],
+            m[0][1] * direction_sm[0] + m[1][1] * direction_sm[1] + m[2][1] * direction_sm[2],
+            m[0][2] * direction_sm[0] + m[1][2] * direction_sm[1] + m[2][2] * direction_sm[2],
+        )
+        ex, ey = dot(ref, self.frame.e1), dot(ref, self.frame.e2)
+        theta = theta_rad(self.state)
+        radial = ex * math.cos(theta) + ey * math.sin(theta)
+        tangential = -ex * math.sin(theta) + ey * math.cos(theta)
+        self.pitch_rad = math.atan2(-tangential, radial)
 
     async def _service_throttle(self) -> float:
         """Fold the AGC's engine and throttle commands into the actuator; return throttle."""
-        assert self.actuator is not None and self._read_thrust_increment is not None
+        assert self.actuator is not None and self._read_guidance_sample is not None
         act = self.client.actuators
+        engine_just_lit = act.engine_on and not self.actuator.engine_on
         if act.engine_on != self.actuator.engine_on:
             self.actuator.set_engine(act.engine_on)
-        if act.throttle_strobe_count != self._strobes_seen:
-            self._strobes_seen = act.throttle_strobe_count
-            self.actuator.command(await self._read_thrust_increment())
+            if engine_just_lit:
+                self._stamp_seen = None  # a command stamped before ignition is not ours to apply
+        due = act.engine_on and self.ticks % self.guidance_every_ticks == 0
+        if engine_just_lit or due:
+            sample = await self._read_guidance_sample()
+            if self._stamp_seen is not None and sample.command_stamp != self._stamp_seen:
+                self.actuator.command(sample.thrust_increment_counts)
+            self._stamp_seen = sample.command_stamp
+            if sample.thrust_direction_sm is not None:
+                self._apply_direction(sample.thrust_direction_sm)
         self.actuator.step(self.dt_s)
         return self.actuator.throttle_fraction
 
@@ -123,13 +157,14 @@ class Simulation:
         dsky = self.client.dsky
         act = self.client.actuators
         return {
-            "t": round(self.clock.sim_time_s, 6),
+            "t": round(self.t_offset_s + self.clock.sim_time_s, 6),
             "h_m": self.state.h_m,
             "x_m": self.state.x_m,
             "hdot_ms": self.state.hdot_ms,
             "vt_ms": self.state.xdot_ms,
             "mass_kg": self.state.mass_kg,
             "thrust_n": thrust_n,
+            "pitch_deg": math.degrees(self.pitch_rad),
             "pipa_pulses": list(pulses),
             "dsky": {
                 "prog": dsky.program_number,
@@ -145,17 +180,26 @@ class Simulation:
             "clock_drift_s": self.clock.drift_s if isinstance(self.clock, SteppedClock) else None,
         }
 
+    async def advance_instructions(self, instructions: int) -> None:
+        """Let `instructions` AGC instructions elapse *with the plant alongside* -- the hook to
+        hand to SteppedDsky so that key presses advance both together. Rounded to whole ticks.
+        """
+        cpi = self.clock.cycles_per_instruction if isinstance(self.clock, SteppedClock) else 1.62
+        seconds = instructions * cpi / AGC_CYCLES_PER_SECOND
+        for _ in range(max(1, round(seconds / self.dt_s))):
+            await self.tick()
+
     async def run(self, duration_s: float) -> None:
         for _ in range(round(duration_s / self.dt_s)):
             await self.tick()
 
 
-def stepped_thrust_reader(agc: AgcProcess) -> Callable[[], Awaitable[int]]:
-    """Read the AGC's THRUST register (a signed thrust increment, in counts) at the pause
-    boundary of a stepped run.
-    """
+def stepped_guidance_reader(
+    agc: AgcProcess, symbols: SymbolTable
+) -> Callable[[], Awaitable[GuidanceSample]]:
+    """Read THRUST and UNFC/2 at the pause boundary of a stepped run (one ~15 ms core dump)."""
 
-    async def read() -> int:
-        return (await agc.coredump()).erasable_signed(*THRUST_REGISTER)
+    async def read() -> GuidanceSample:
+        return read_guidance(await agc.coredump(), symbols)
 
     return read
