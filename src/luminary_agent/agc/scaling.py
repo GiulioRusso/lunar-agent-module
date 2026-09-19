@@ -18,6 +18,28 @@ _HALF = 0o40000  # ones' complement sign bit of a 15-bit word
 _DP_SCALE = 1 << 28
 
 
+def sp_encode(fraction: float) -> int:
+    """Encode a fraction in [-1, 1) as one AGC word (14 magnitude bits, ones' complement)."""
+    magnitude = round(abs(fraction) * (1 << 14))
+    if magnitude >= 1 << 14:
+        raise OverflowError(f"fraction {fraction} does not fit a single-precision word")
+    return WORD_MASK ^ magnitude if fraction < 0 else magnitude
+
+
+def sp_decode(word: int) -> float:
+    negative = word >= _HALF
+    magnitude = (WORD_MASK ^ word) if negative else word
+    return (-1 if negative else 1) * magnitude / (1 << 14)
+
+
+def sp_from_value(value: float, b: int) -> int:
+    return sp_encode(to_fraction(value, b))
+
+
+def sp_to_value(word: int, b: int) -> float:
+    return from_fraction(sp_decode(word), b)
+
+
 def dp_encode(fraction: float) -> tuple[int, int]:
     """Encode a fraction in [-1, 1) as (high, low) AGC words."""
     magnitude = round(abs(fraction) * _DP_SCALE)

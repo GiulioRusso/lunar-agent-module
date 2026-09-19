@@ -2,7 +2,14 @@ import math
 
 import pytest
 
-from luminary_agent.agc.scaling import dp_decode, dp_encode, dp_from_value, dp_to_value
+from luminary_agent.agc.scaling import (
+    dp_decode,
+    dp_encode,
+    dp_from_value,
+    dp_to_value,
+    sp_from_value,
+    sp_to_value,
+)
 
 # (value, B-exponent, (high, low)) -- copied from a real yaYUL listing of Luminary099, where
 # the assembler encoded each `2DEC value Bn` constant. This is ground truth for the format.
@@ -51,3 +58,40 @@ def test_negative_is_bitwise_not_of_both_words() -> None:
 def test_overflow_is_an_error() -> None:
     with pytest.raises(OverflowError):
         dp_encode(1.0)
+
+
+# Single-precision `DEC` constants, as encoded by yaYUL (value, B-exponent, word).
+SP_GOLDEN = [
+    (-30.30, 5, 0o41545),  # APSVEX:  DEC -3030 E-2 B-5   (a negative)
+    (24.0, 14, 0o00030),  # THRESH1: DEC 24 B-14
+    (3841.0, 14, 0o07401),  # FMAXODD: DEC +3841 B-14
+    (3467.0, 14, 0o06613),  # FMAXPOS: DEC +3467 B-14
+]
+
+
+@pytest.mark.parametrize(("value", "b", "word"), SP_GOLDEN)
+def test_sp_encoder_reproduces_the_assemblers_word(value: float, b: int, word: int) -> None:
+    got = sp_from_value(value, b)
+    assert abs(got - word) <= 1, f"{value} B{b}: got {got:#o}, assembler wrote {word:#o}"
+
+
+@pytest.mark.parametrize(("value", "b", "word"), SP_GOLDEN)
+def test_sp_decoder_inverts_the_assemblers_word(value: float, b: int, word: int) -> None:
+    assert math.isclose(sp_to_value(word, b), value, abs_tol=2.0**b / 2**14)
+
+
+def test_refsmmat_identity_is_stored_as_one_half() -> None:
+    from luminary_agent.agc.landing_setup import IDENTITY, refsmmat_words
+
+    words = refsmmat_words(IDENTITY)
+    assert len(words) == 18
+    assert dp_to_value(words[0], words[1], 1) == 1.0  # element (0,0)
+    assert dp_to_value(words[2], words[3], 1) == 0.0  # element (0,1)
+    assert dp_to_value(words[8], words[9], 1) == 1.0  # element (1,1): row-major position 4
+    assert dp_from_value(1.0, 1) == (0o20000, 0)  # 1.0 stored as the fraction 0.5
+
+
+def test_refsmbit_is_bit_13_of_flagwrd3() -> None:
+    from luminary_agent.agc.landing_setup import REFSMBIT_MASK
+
+    assert REFSMBIT_MASK == 0o10000  # "10000 FOR REFSMMAT GOOD" (PADLOADS.agc), bit 13, 1-based

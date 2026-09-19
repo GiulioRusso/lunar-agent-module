@@ -383,10 +383,18 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       this; instead poll yaAGC's own `--dump-time` core-dump file, which is a complete text
       snapshot including all erasable memory (`agc/coredump.py`, `CoreDumpPoller`), verified
       end-to-end against a real running yaAGC in
-      `tests/integration/test_coredump_against_real_yaagc.py`. Still open: an actual
-      Newtons-per-count calibration for the THRUST register's raw pulse units — the one
-      source found (`FEXTRA = BIT13 # +5.13309020E+4` in `THROTTLE_CONTROL_ROUTINES.agc`)
-      needs the pad-loaded `SCALEFAC`/`FMAXPOS` constants to fully decode, not yet run down.
+      `tests/integration/test_coredump_against_real_yaagc.py`. **Calibration now closed:** three independent (count, force) pairs annotated in the
+      flight-software source agree to 0.02% — `FMAXPOS` 3467 ↔ 43,454.7, `FMAXODD` 3841 ↔ 48,145.4,
+      `FEXTRA` 4096 ↔ 51,330.9 — giving **12.533 N per count**. `FMAX` is thrust at the fixed 92.5%
+      detent, so 100% is 46.98 kN, within 0.6% of the DPS's rated ~46.7 kN. This also exposed an
+      error in my earlier placeholder (43.9 kN was FMAX mistaken for 100%); `propulsion.py` now
+      derives `F_MAX_N` from it. The PADLOADS comment's "2.7 lbf/bit" is a 4% rounding of 2.82.
+      **Second finding, bigger:** re-reading `THROTTLE_CONTROL_ROUTINES.agc`, the `THRUST` register
+      is `PIF + PIFPSET` where `PIF = FC − FP` — a thrust **increment** (desired minus present),
+      not a level, slewed at 32 counts/cs by the hardware. The plant therefore needs a
+      `ThrottleActuator` that *integrates* the increments each `ch14 bit 4` strobe (~40 kN/s slew,
+      ~1 s full-range), not a "read the throttle level" shortcut. My earlier framing (poll the
+      register for the throttle) was wrong in kind, not just in units.
       IMU pulses now sent as real `UnprogrammedIncrement` packets (`agc/registers.py`:
       `pipa_pulse_packets`/`cdu_pulse_packets`, channel = `0x80 | register`, PINC/MINC for
       PIPA, PCDU/MCDU for CDU) and verified against a live yaAGC in
@@ -469,6 +477,21 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
          residual ~2 mrad from lunar rotation, below plant resolution).
       Useful oracle found: `V06N89`/`V06N43` make the flight software convert `RLS` / position
       back to lat-long-altitude, so a wrong scale shows up as an absurd altitude on the DSKY.
+      **1b RESULT (exploratory, will become a test): `V37E63E` engages P63 with no alarm.**
+      After fresh start, discretes, the landing pad loads, `REFSMMAT`+`REFSMFLG`, `RLS`, `TLAND` and
+      an LM state vector (all through P27), `MODREG = 63`, display `P63`, `FAILREG` clear — so
+      `R02BOTH` passed and P63 is running `IGNALG` (stop points in `INTEGRATION_INITIALIZATION`/
+      `INTERPRETER`). Pad-load work: `agc/padloads.py` parses Luminary 69's catalogue (121 entries;
+      all 26 landing ones resolve as erasable symbols in Luminary 99); **entries carry separate
+      TWO-PHASE and ONE-PHASE landing-mode values — Apollo 11 used one-phase, so that is selected
+      explicitly**; `TLAND` has no documented value ("launch date dependent") and is
+      scenario-supplied. `agc/loads.py` batches ~70 words into the fewest P27 sessions; loading the
+      full set and reading every word back takes ~57 s and raises no alarm. Parser bugs caught by
+      tests along the way: the assembler's `B-n` sign convention, a `\b`/`*` regex backtrack that
+      silently produced 0.0, and a bare `1DEC 3000` meaning an integer word (default B-14, B-28
+      for DP). **Practical consequence: stepped mode is wall-clock-paced, so experiments that need
+      minutes of AGC time cost minutes of real time** — budget for it, run long probes in the
+      background, and keep the integration suite's slow tests few.
       **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
       `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
       **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector

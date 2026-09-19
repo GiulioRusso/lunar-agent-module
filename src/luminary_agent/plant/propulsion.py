@@ -15,11 +15,22 @@ from dataclasses import dataclass
 
 G0 = 9.80665  # m/s^2, standard gravity used to define specific impulse
 
-F_MAX_N = 43_903.0  # rated max DPS thrust, N (~9870 lbf)
 ISP_S = 311.0  # vacuum specific impulse, s
 THROTTLE_MIN = 0.10
 THROTTLE_MAX_VARIABLE = 0.60
 THROTTLE_FIXED_DETENT = 0.925
+
+# Thrust as Luminary's throttle software counts it. Three independent (count, force) pairs
+# annotated in the flight-software source agree to 0.02%:
+#   FMAXPOS  DEC +3467 B-14   "FMAX +4.34546769 E+4"   (THROTTLE_CONTROL / CONTROLLED_CONSTANTS)
+#   FMAXODD  DEC +3841 B-14   "FSAT +4.81454413 E+4"
+#   FEXTRA = BIT13 = 4096     "FEXT +5.13309020 E+4"    (THROTTLE_CONTROL_ROUTINES.agc)
+# giving ~12.533 N per count (2.82 lbf; the PADLOADS comment's "2.7 lbf/bit" is a rounding).
+# FMAX is the thrust at the fixed 92.5% detent, which puts 100% at 46.98 kN -- within 0.6% of
+# the DPS's rated ~46.7 kN. (An earlier placeholder here, 43.9 kN, was FMAX mistaken for 100%.)
+FMAX_DETENT_N = 43_454.6769
+THRUST_N_PER_COUNT = 12.5334
+F_MAX_N = FMAX_DETENT_N / THROTTLE_FIXED_DETENT  # 100% thrust, N
 
 
 def resolve_throttle(commanded: float) -> float:
