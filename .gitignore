@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# external/virtualagc is a submodule; its own build artifacts stay untracked
+external/virtualagc/build/
+external/virtualagc/**/*.o
+external/virtualagc/**/*.bin
+external/virtualagc/**/*.symtab
+external/virtualagc/yaYUL/yaYUL
+external/virtualagc/yaAGC/yaAGC
+
+# yaAGC core-resume dumps, if ever run with cwd=repo root instead of a scratch dir
+/core
+yaAGC.cdulog
+
+# generated at runtime
+results/logs/*
+results/figures/*
+results/tables/*
+!results/logs/.gitkeep
+!results/figures/.gitkeep
+!results/tables/.gitkeep
+
+.DS_Store

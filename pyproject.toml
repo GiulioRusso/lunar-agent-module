@@ -1,0 +1,43 @@
+[project]
+name = "luminary-agent"
+version = "0.1.0"
+description = "LLM flight director for a locally-emulated Apollo LM (Luminary 099 / yaAGC)."
+readme = "README.md"
+authors = [
+    { name = "giuliorusso", email = "russogiulio1998@icloud.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.3",
+]
+
+[project.scripts]
+luminary-agent = "luminary_agent:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pre-commit>=4.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["external"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

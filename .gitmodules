@@ -1,0 +1,3 @@
+[submodule "external/virtualagc"]
+	path = external/virtualagc
+	url = https://github.com/virtualagc/virtualagc.git
