@@ -25,7 +25,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.coredump import CoreDump
@@ -33,6 +33,7 @@ from luminary_agent.agc.process import AgcProcess
 from luminary_agent.agc.registers import REG_PIPAX, REG_PIPAY, REG_PIPAZ
 from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import SymbolTable
+from luminary_agent.plant.discretes import Discretes
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.surface import downrange_error_m, horizontal_speed_relative_to_surface
@@ -44,6 +45,18 @@ from luminary_agent.sim.landing_scenario import DescentScenario, LandingSetup
 from luminary_agent.sim.loop import PipaAxes, Simulation, stepped_guidance_reader
 from luminary_agent.sim.p63_crew import start_p63
 from luminary_agent.sim.recorder import Recorder
+
+
+class Pilot(Protocol):
+    """Crew takeover: `wants_manual` is polled every tick until it says yes; from then on the
+    pilot commands (throttle fraction, thrust pitch) via `control`."""
+
+    name: str
+
+    def wants_manual(self, state: PlanarState, program: int | None) -> bool: ...
+
+    def control(self, state: PlanarState) -> tuple[float, float]: ...
+
 
 ALARM_CHECK_EVERY_TICKS = 50  # once per simulated second
 LANDING_PROGRAMS = frozenset({63, 64, 65, 66, 67})
@@ -124,6 +137,7 @@ async def _fly(
     notes: list[str],
     on_second: Callable[[Simulation, CoreDump], None] | None,
     checkpoint: tuple[float, Path] | None,
+    pilot: Pilot | None = None,
 ) -> DescentResult:
     dsky = SteppedDsky(agc, client, advance=sim.advance_instructions)
     failreg = symbols.ecadr("FAILREG")
@@ -138,6 +152,20 @@ async def _fly(
         t = sim.t_offset_s + clock.sim_time_s
 
         d = client.dsky
+        if (
+            pilot is not None
+            and sim.manual is None
+            and pilot.wants_manual(sim.state, d.program_number)
+        ):
+            # Manual throttle discrete (CHAN30 bit 5): Luminary's R13 monitor selects P67 and
+            # stops commanding the engine; the crew's control takes over in the plant.
+            await client.write_channels(
+                Discretes(lr_position_1=True, auto_throttle=False).channel_words()
+            )
+            sim.manual = pilot.control
+            notes.append(
+                f"manual takeover (P67 requested) at plant t={t:.1f} s, h={sim.state.h_m:.0f} m"
+            )
         if engine_enabled_at is None and d.verb_number == 99 and d.noun_number == 62:
             await dsky.verb(33)  # the crew enables the engine
             engine_enabled_at = sim.t_offset_s + clock.sim_time_s
@@ -186,6 +214,7 @@ async def run_descent(
     on_second: Callable[[Simulation, CoreDump], None] | None = None,
     checkpoint: tuple[float, Path] | None = None,
     dispersion: Dispersion | None = None,
+    pilot: Pilot | None = None,
 ) -> DescentResult:
     """`dispersion` makes the plant differ from what the AGC was told (scenarios/dispersions.py).
     `on_second`, if given, is called once per simulated second with the plant and a fresh
@@ -218,7 +247,7 @@ async def run_descent(
     )
     return await _fly(
         agc, client, symbols, setup, sim, clock, elapsed_s, max_sim_s, None, notes,
-        on_second, checkpoint,
+        on_second, checkpoint, pilot,
     )  # fmt: skip
 
 

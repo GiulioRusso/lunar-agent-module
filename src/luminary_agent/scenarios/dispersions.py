@@ -9,7 +9,8 @@ much unless someone intervenes.
 Tiers (frozen eval sets are `sample(seed, tier)` for fixed seeds; never re-draw after tuning):
   1  gentle: thrust +-0.5 %, velocity error 0.005 m/s, up to 2 % less propellant
   2  moderate: thrust +-1.5 %, 10 m altitude error, 0.02 m/s, up to 5 % less propellant
-  3  hard: thrust +-3 %, 30 m altitude error, 0.05 m/s, up to 9 % less propellant
+  3  hard: thrust +-3 %, 100 m altitude error, 0.3 m/s, up to 9 % less propellant (a navigation
+     error the AGC cannot see: only a crew reading the radar can land it -- policies/manual_lander)
 The propellant shortfall is the margin a real crew watched (Apollo 11 landed with ~25 s left): the
 engine cuts off when the usable propellant is gone.
 Scale is set by physics, not taste: with no landing-radar update the AGC never learns a start-state
@@ -31,7 +32,7 @@ NOMINAL_PROPELLANT_KG = 8_200.0  # usable descent propellant; the nominal landin
 _TIERS = {  # (thrust_frac, dh_m, dv_ms, mass_frac, propellant_shortfall_frac)
     1: (0.005, 0.0, 0.005, 0.01, 0.02),
     2: (0.015, 10.0, 0.02, 0.03, 0.05),
-    3: (0.03, 30.0, 0.05, 0.05, 0.09),
+    3: (0.03, 100.0, 0.3, 0.05, 0.09),
 }
 
 

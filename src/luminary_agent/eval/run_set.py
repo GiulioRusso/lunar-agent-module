@@ -21,12 +21,12 @@ from luminary_agent.eval.sets import SETS
 from luminary_agent.viz.replay import build
 
 
-async def one(tier: int, seed: int, port: int, out: Path) -> dict[str, object]:
+async def one(tier: int, seed: int, port: int, out: Path, pilot: str) -> dict[str, object]:
     stem = out / f"t{tier}_s{seed}"
     if not stem.with_suffix(".json").exists():
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "luminary_agent.eval.run_null", str(tier), str(seed), str(port),
-            str(out / f"work_t{tier}_s{seed}"), "--log", str(stem) + ".jsonl.gz",
+            str(out / f"work_t{tier}_s{seed}"), "--log", str(stem) + ".jsonl.gz", "--pilot", pilot,
             stdout=asyncio.subprocess.PIPE,
         )  # fmt: skip
         stdout, _ = await proc.communicate()
@@ -37,13 +37,15 @@ async def one(tier: int, seed: int, port: int, out: Path) -> dict[str, object]:
     return json.loads(stem.with_suffix(".json").read_text())  # type: ignore[no-any-return]
 
 
-async def main(jobs: list[tuple[int, int]], workers: int, out: Path) -> None:
+async def main(
+    jobs: list[tuple[int, int]], workers: int, out: Path, pilot: str, port_base: int
+) -> None:
     out.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(workers)
 
     async def guarded(i: int, t: int, s: int) -> dict[str, object]:
         async with sem:
-            r = await one(t, s, 20100 + i, out)
+            r = await one(t, s, port_base + i, out, pilot)
         sc = r["score"]
         assert isinstance(sc, dict)
         verdict = "SAFE" if sc["safe"] else "FAIL"
@@ -67,9 +69,11 @@ if __name__ == "__main__":
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--out", type=Path, default=Path("results/logs/demo"))
+    ap.add_argument("--pilot", choices=["none", "manual"], default="none")
+    ap.add_argument("--port-base", type=int, default=20100, help="distinct range per batch")
     ap.add_argument(
         "--set", choices=sorted(SETS), help="a frozen or dev set instead of tiers/seeds"
     )
     a = ap.parse_args()
     todo = list(SETS[a.set]) if a.set else [(t, s) for t in a.tiers for s in a.seeds]
-    asyncio.run(main(todo, a.workers, a.out))
+    asyncio.run(main(todo, a.workers, a.out, a.pilot, a.port_base))

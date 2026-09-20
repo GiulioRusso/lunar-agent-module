@@ -12,7 +12,7 @@ def test_tiers_bound_the_dispersion() -> None:
     for seed in range(50):
         d = sample(seed, 1)
         assert abs(d.thrust_scale - 1) <= 0.005 and d.dh0_m == 0.0
-        assert abs(sample(seed, 3).dh0_m) <= 30.0
+        assert abs(sample(seed, 3).dh0_m) <= 100.0
 
 
 def test_apply_and_engine() -> None:

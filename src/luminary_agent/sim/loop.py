@@ -93,6 +93,7 @@ class Simulation:
         self._read_guidance_sample = read_guidance_sample
         self._stamp_seen: int | None = None
         self.guidance_every_ticks = guidance_every_ticks
+        self.manual: Callable[[PlanarState], tuple[float, float]] | None = None  # crew takeover
         self.dry_mass_kg = dry_mass_kg  # engine cuts off when propellant is gone
         self.z_m = 0.0  # out-of-plane position (along the orbit normal)
         self.zdot_ms = 0.0
@@ -144,7 +145,11 @@ class Simulation:
         return self.actuator.throttle_fraction
 
     async def tick(self) -> dict[str, Any]:
-        throttle = await self._service_throttle() if self.actuator else self.throttle()
+        if self.manual is not None:
+            throttle, self.pitch_rad = self.manual(self.state)
+            self.normal_fraction = 0.0
+        else:
+            throttle = await self._service_throttle() if self.actuator else self.throttle()
         if self.dry_mass_kg is not None and self.state.mass_kg <= self.dry_mass_kg:
             throttle = 0.0
         control = Control(throttle=throttle, pitch_rad=self.pitch_rad)
