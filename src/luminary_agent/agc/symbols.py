@@ -44,9 +44,6 @@ class SymbolTable:
         sym = self._get(name, "C")
         return sym.value
 
-    def erasable_address(self, name: str) -> int:
-        return self._get(name, "E").value
-
     def ecadr(self, name: str) -> int:
         sym = self._get(name, "E")
         bank = sym.bank if sym.bank is not None else sym.value >> 8

@@ -19,26 +19,24 @@ from luminary_agent.plant.surface import MOON_RATE_RAD_S
 from luminary_agent.sim.recorder import read_decisions, read_episode
 
 FIELDS = ("t", "h_m", "x_m", "z_m", "hdot_ms", "vh_rel", "mass_kg", "thrust_n", "pitch_deg")
-DSKY_FIELDS = ("mode", "prog", "verb", "noun", "r1", "r2", "r3")
+DSKY_FIELDS = ("mode", "prog", "verb", "noun", "r1", "r2", "r3")  # after FIELDS in each row
 
 PAGE = (Path(__file__).parent / "replay.html").read_text()
 
 
 def _row(tick: dict[str, Any]) -> list[Any]:
-    d = tick.get("dsky") or {}
+    d = tick["dsky"]
     vh_rel = tick["vt_ms"] - MOON_RATE_RAD_S * (R_MOON + tick["h_m"])
-    nums = [tick.get(f) or 0.0 for f in FIELDS if f != "vh_rel"]
-    nums.insert(FIELDS.index("vh_rel"), vh_rel)
-    return [round(v, 3) for v in nums] + [
-        tick.get("mode", "auto"), d.get("prog"), d.get("verb"), d.get("noun"),
-        d.get("r1"), d.get("r2"), d.get("r3"),
-    ]  # fmt: skip
+    values = [tick[k] for k in ("t", "h_m", "x_m", "z_m", "hdot_ms")]
+    values += [vh_rel] + [tick[k] for k in ("mass_kg", "thrust_n", "pitch_deg")]
+    dsky = [d[k] for k in ("prog", "verb", "noun", "r1", "r2", "r3")]
+    return [round(v, 3) for v in values] + [tick.get("mode", "auto")] + dsky
 
 
-def _decisions(episode: Path) -> list[dict[str, Any]]:
-    """Agent decisions with consecutive repeats of the same intent collapsed to the first."""
+def _collapse(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Consecutive repeats of the same intent and outcome collapse to the first."""
     out: list[dict[str, Any]] = []
-    for r in read_decisions(episode):
+    for r in decisions:
         key = (r["intent"], r["applied"])
         if out and out[-1]["key"] == key:
             continue
@@ -49,29 +47,24 @@ def _decisions(episode: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _altitudes(episode: Path) -> list[list[float | None]]:
-    """[t, radar altitude, AGC altitude] at every decision (None: no radar lock / not displayed)."""
-    return [
-        [r["t"], r["obs"].get("radar_altitude_m"), r["obs"].get("agc_altitude_m")]
-        for r in read_decisions(episode)
-    ]
-
-
 def build(episode: Path, out: Path, hz: float = 10.0) -> None:
     header, ticks = read_episode(episode)
     rows = [_row(t) for t in ticks]
     dt = rows[1][0] - rows[0][0]
     stride = max(1, round(1.0 / (hz * dt)))
-    data = rows[::stride]
-    title = " | ".join(
-        f"{k}={v}" for k, v in header.items() if k in ("policy", "tier", "seed", "clock")
-    )
+    decisions = read_decisions(episode)
+    # [t, radar altitude, AGC altitude] at every decision (None: no radar lock / not displayed)
+    altitudes = [
+        [r["t"], r["obs"].get("radar_altitude_m"), r["obs"].get("agc_altitude_m")]
+        for r in decisions
+    ]
+    title = " | ".join(f"{k}={header[k]}" for k in ("policy", "tier", "seed") if k in header)
     page = (
         PAGE.replace("__TITLE__", title or "episode")
         .replace("__FIELDS__", json.dumps(list(FIELDS) + list(DSKY_FIELDS)))
-        .replace("__DATA__", json.dumps(data, separators=(",", ":")))
-        .replace("__DEC__", json.dumps(_decisions(episode), separators=(",", ":")))
-        .replace("__ALT__", json.dumps(_altitudes(episode), separators=(",", ":")))
+        .replace("__DATA__", json.dumps(rows[::stride], separators=(",", ":")))
+        .replace("__DEC__", json.dumps(_collapse(decisions), separators=(",", ":")))
+        .replace("__ALT__", json.dumps(altitudes, separators=(",", ":")))
         .replace("__HZ__", str(1.0 / (stride * dt)))
     )
     out.write_text(page)

@@ -115,9 +115,13 @@ class LunarFrame:
         vx, vy = inertial_vector(state.hdot_ms, state.xdot_ms, theta)
         return StateVector(r_m=self.to_ref(rx, ry), v_ms=self.to_ref(vx, vy), t_cs=t_cs)
 
-    def specific_force_ref(self, radial: float, tangential: float, theta: float) -> Vec:
+    def specific_force_ref(
+        self, radial: float, tangential: float, theta: float, normal: float = 0.0
+    ) -> Vec:
         ax, ay = inertial_vector(radial, tangential, theta)
-        return self.to_ref(ax, ay)
+        x, y, z = self.to_ref(ax, ay)
+        n = self.normal
+        return (x + normal * n[0], y + normal * n[1], z + normal * n[2])
 
 
 # The default frame for tests that do not care about the Moon: reference axes = plane axes.

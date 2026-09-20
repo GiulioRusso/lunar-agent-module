@@ -142,8 +142,8 @@ Apollo-Agent/
 └── results/logs/                output degli episodi (ignorato da git)
 ```
 
-Il pacchetto si chiama `luminary_agent`. `src/luminary_agent/__init__.py` contiene solo una
-funzione `main()` che stampa "Hello": non è il punto di ingresso vero (vedi §5).
+Il pacchetto si chiama `luminary_agent`. `src/luminary_agent/__init__.py` è vuoto: non c'è un
+`main` unico, i punti di ingresso sono nella sezione 5.
 
 ---
 
@@ -155,7 +155,7 @@ Non c'è un unico `main`. Ci sono quattro **punti di ingresso**, ognuno da lanci
 | Comando | Cosa fa |
 |---|---|
 | `luminary_agent.agc.build` | **Una volta sola**: scarica il sottomodulo, compila yaYUL e yaAGC (con cmake), assembla Luminary 099 e salva il listing. `make agc`. |
-| `luminary_agent.eval.run_episode TIER SEED PORT WORKDIR --policy NOME --log FILE` | **Un episodio completo**: una discesa, stampa una riga JSON col punteggio. |
+| `luminary_agent.eval.run_episode TIER SEED PORT WORKDIR --policy NOME --log FILE` (il log è obbligatorio) | **Un episodio completo**: una discesa, stampa una riga JSON col punteggio. |
 | `luminary_agent.eval.run_set --tiers ... --seeds ... --policy NOME` (o `--set frozen/dev`) | **Tanti episodi in parallelo**: lancia `run_episode` come processi separati, poi replay HTML e tabella riassuntiva. `make demo`. |
 | `luminary_agent.viz.replay LOG OUT.html` | Trasforma un log in una pagina HTML. |
 | `luminary_agent.eval.report CARTELLA` | Tabella riassuntiva di una cartella di risultati. |
@@ -228,7 +228,7 @@ sequenceDiagram
 6. `AgcClient(port)`: connessione TCP. Parte un task in background che legge i pacchetti in arrivo e
    aggiorna `client.dsky` (cosa mostra il display) e `client.actuators` (motore acceso? getti?).
 7. `prepare_landing(...)` (§6.3).
-8. Se c'è un log: `Recorder(log, header)` scrive la prima riga del file.
+8. `Recorder(log, header)` scrive la prima riga del file di log.
 9. `run_descent(...)` (§6.4–6.7) → un `DescentResult`.
 10. `score(res, disp.dry_mass_kg)` (`eval/score.py`) → atterrato? sicuro? Stampa il JSON.
 
@@ -373,7 +373,8 @@ flowchart TD
 - **Allarmi**: raccolti dalla variabile `FAILREG`. Sono registrati, non fermano l'episodio.
 - **Abort**: se Luminary lascia i programmi di atterraggio (torna a P00) dopo aver iniziato,
   l'episodio finisce come "aborted".
-- **Decisioni** (agente): vedi §7.
+- **Decisioni** (agente): la funzione `_consult` fa osservazione → `policy.decide` → `executor.apply`
+  → registrazione, e restituisce quando decidere la prossima volta. Vedi §7.
 
 ### 6.7b Cronologia tipica di una discesa (dai log reali, tier 2 seed 0; tempi del plant)
 
@@ -508,8 +509,9 @@ estetico: la linea a quota 0 è il suolo vero.
 - **Modo realtime**: esiste `RealtimeClock` ma la discesa completa non è guidata in quel modo.
 - **~1 km** di scarto nella matrice di orientazione lunare rispetto al sito che vede l'AGC
   (causa non chiarita) e ~300–700 m di scarto sul sito a fine discesa.
-- **Makefile**: `make run`, `make eval`, `make reproduce` puntano a moduli che **non esistono**.
-  Funzionano: `setup`, `agc`, `test`, `lint`, `demo`.
+- **Strumenti di diagnosi**: checkpoint/ripresa della discesa (`save_checkpoint`, `resume_descent`)
+  e il gancio `on_second` esistono ma il percorso normale non li usa; servono a rifare in
+  pochi secondi solo la fase finale di una discesa da ~17 minuti.
 
 ---
 
@@ -535,7 +537,7 @@ estetico: la linea a quota 0 è il suolo vero.
 | `padloads.py` | Legge il catalogo pad load da `Luminary069/PADLOADS.agc` (direttive assembler: `2DEC`, `1DEC`, `OCT`...). | `load_padloads`, `parse_padloads`, `PadLoad` |
 | `state_vector.py` | Vettore di stato (posizione, velocità, tempo) → parole AGC; carica LM e CSM via P27. | `StateVector`, `load_lm_state_vector`, `load_csm_state_vector` |
 | `landing_setup.py` | Dati richiesti da P63 oltre ai pad load: REFSMMAT, sito RLS, TLAND, bit di flag. | `refsmmat_words`, `rls_words`, `tland_words`, `set_flag_bit` |
-| `cdu.py` | Angoli dei giunti: conversioni, lettura degli angoli desiderati da Luminary (THETAD), pre-impostazione dei registri CDU. | `desired_gimbal_counts`, `cdu_counts`, `seed_cdus` |
+| `cdu.py` | Angoli dei giunti: lettura degli angoli desiderati da Luminary (THETAD), pre-impostazione dei registri CDU. | `desired_gimbal_counts`, `cdu_counts`, `seed_cdus`, `COUNTS_PER_REV` |
 | `guidance.py` | Legge dal core dump **cosa vuole la guida**: incremento di spinta, direzione, timbro. | `GuidanceSample`, `read_guidance` |
 
 ### 11.2 `src/luminary_agent/plant/` — fisica e sensori
@@ -558,10 +560,10 @@ estetico: la linea a quota 0 è il suolo vero.
 | File | Cosa fa | Cose principali |
 |---|---|---|
 | `loop.py` | **Il tick** (§6.5), gestione motore/direzione (§6.6), canale laterale, registrazione. | `Simulation` (`tick`, `run`, `advance_instructions`), `PipaAxes`, `stepped_guidance_reader` |
-| `descent.py` | Discesa completa: crew, coast, `_fly`, checkpoint/ripresa, osservazione, riepilogo. | `run_descent`, `_fly`, `observe`, `save_checkpoint`, `resume_descent`, `coast`, `summarize`, `DescentResult` |
+| `descent.py` | Discesa completa: crew, coast, `_fly` (il ciclo), `_consult` (una decisione dell'agente), osservazione, checkpoint/ripresa (diagnosi), riepilogo. | `run_descent`, `_fly`, `_consult`, `observe`, `save_checkpoint`, `resume_descent`, `coast`, `summarize`, `DescentResult` |
 | `landing_scenario.py` | Prepara un AGC pronto per P63 (§6.3) e definisce lo scenario nominale. | `DescentScenario`, `LandingSetup`, `prepare_landing` |
 | `p63_crew.py` | Le risposte dell'equipaggio ai messaggi di P63 (§6.4). | `start_p63`, `wait_for_display`, `CrewProcedureError` |
-| `frames.py` | Sistemi di riferimento: dal piano del plant allo spazio 3D dell'AGC; matrice REFSMMAT di atterraggio; vettori di stato; algebra dei vettori. | `LunarFrame`, `dot`, `cross`, `mat_vec` |
+| `frames.py` | Sistemi di riferimento: dal piano del plant allo spazio 3D dell'AGC (asse `normal` = perpendicolare al piano); matrice REFSMMAT di atterraggio; vettori di stato; algebra dei vettori. | `LunarFrame`, `dot`, `cross`, `mat_vec` |
 | `clock.py` | Orologi. `SteppedClock`: avanza l'AGC di quante istruzioni servono per coprire `dt`, ricalibrando. `RealtimeClock`: dorme fino al tempo reale. | `SimClock` (protocollo), `SteppedClock`, `RealtimeClock` |
 | `observation.py` | Cosa può vedere l'agente. | `Observation` |
 | `executor.py` | Applica gli intenti e riporta l'esito. | `Executor` |
@@ -578,10 +580,10 @@ estetico: la linea a quota 0 è il suolo vero.
 | `scenarios/dispersions.py` | `Dispersion` e `sample(seed, tier)` (§8). |
 | `eval/run_episode.py` | Un episodio con punteggio (§6.2). |
 | `eval/run_set.py` | Molti episodi in parallelo, replay e tabella. |
-| `eval/score.py` | `score()` → `Score(landed, safe, vertical_ms, horizontal_ms, site_error_m, fuel_kg)`. |
+| `eval/score.py` | Massa a secco nominale = 15 000 − 8 200 = 6 800 kg (`scenarios/dispersions.py`). `score()` → `Score(landed, safe, vertical_ms, horizontal_ms, site_error_m, fuel_kg)`. |
 | `eval/sets.py` | Set congelato (tier 1-3 × seed 100-119 = 60 episodi) e di sviluppo (seed 0-4 = 15). Non ritoccare il congelato. |
 | `eval/report.py` | Tabella per tier: quanti sicuri, mediane. |
-| `viz/replay.py`, `viz/replay.html` | Replay (§9). |
+| `viz/replay.py`, `viz/replay.html` | Replay (§9). `_row` (un tick → una riga), `_collapse` (decisioni ripetute), `build`. |
 
 ### 11.5 Test
 
@@ -600,7 +602,7 @@ estetico: la linea a quota 0 è il suolo vero.
 | `test_loads.py` | raggruppamento in sessioni P27 |
 | `test_padloads.py` | parser dei pad load |
 | `test_state_vector.py` | conversione dei vettori di stato |
-| `test_cdu.py` | conversioni angoli e conteggi |
+| `test_cdu.py` | 32768 impulsi = un giro, coerenza con la scala IMU, impulsi CDU veloci |
 | `test_discretes.py` | mappa bit dei canali 30-33 |
 | `test_dynamics.py` | fisica: casi analitici (caduta libera, orbita circolare...) |
 | `test_gravity.py`, `test_propulsion.py` | costanti e limiti motore |

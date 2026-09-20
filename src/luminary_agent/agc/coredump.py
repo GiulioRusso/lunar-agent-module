@@ -60,13 +60,6 @@ class CoreDump:
         """AGC clock TIME2:TIME1 in centiseconds (erasable 024/025)."""
         return self.erasable[0][0o24] * 0o40000 + self.erasable[0][0o25]
 
-    @property
-    def agc_time_s(self) -> float:
-        """Simulated AGC time, from the cycle counter -- unlike TIME1/TIME2 (10 ms ticks)
-        this has instruction-level resolution, so it is what the clock calibrates against.
-        """
-        return self.cycle_counter / AGC_CYCLES_PER_SECOND
-
 
 def parse_core_dump(path: str | Path) -> CoreDump:
     """Parse a core-dump file. Raises ValueError if it's truncated (e.g. read mid-write

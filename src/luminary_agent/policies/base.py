@@ -54,10 +54,10 @@ class Policy(Protocol):
     name: str
 
     def decide(self, obs: Observation, t_s: float) -> Intent:
-        """Given the current flight state at simulation time t_s, return an Intent.
+        """Given what the crew can see at simulation time t_s, return an Intent.
 
-        Implementations: NullAgent (no intent, pure Luminary), ScriptedAgent (Apollo 11
-        timeline), PIDAgent (ROD channel), LLMAgent (planner/executor, Phase 4).
+        Implementations: NullAgent (pure Luminary), ScriptedAgent (fixed takeover rule); an LLM
+        agent is the next one (Track B).
         """
         ...
 

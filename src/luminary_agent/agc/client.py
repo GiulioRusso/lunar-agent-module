@@ -80,7 +80,7 @@ class AgcClient:
             await asyncio.sleep(delay_s)
 
     async def send_pipa_pulses(self, register: int, pulse_count: int) -> None:
-        """Feed one IMU sample's worth of PIPA pulses (see sensors.PlanarImu.sample) into
+        """Feed one IMU sample's worth of PIPA pulses (see sensors.Imu.sample) into
         the AGC as PINC/MINC counter-increment writes on `register`.
         """
         await self._send_packets(pipa_pulse_packets(register, pulse_count))

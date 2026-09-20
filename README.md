@@ -9,10 +9,12 @@ the flight-context taxonomy the scenario generator is built from.
 
 ## Status
 
-Track A works end to end for the unassisted baseline: the original Luminary 099 rope flies a
-simulated LM from powered-descent initiation to a soft landing (P63 -> P64 -> P65), closed through
-the emulator's PIPA/CDU/throttle channels, with seeded dispersions, a scorer, and an HTML replay.
-No LLM agent yet (Track B).
+Track A works end to end: the original Luminary 099 rope flies a simulated LM from powered-descent
+initiation to a soft landing (P63 -> P64 -> P65), closed through the emulator's accelerometer,
+gimbal-angle and throttle channels, with seeded dispersions, a scorer, an agent interface (observe,
+decide, take manual control) and an HTML replay. No LLM agent yet (Track B).
+
+Code walkthrough, glossary and a file-by-file reference: [`README-simulator.md`](README-simulator.md).
 
 ## See results
 
@@ -25,20 +27,22 @@ open results/logs/demo/t1_s0.html     # replay of one descent (1x, pause, scrub,
 Each episode also writes `t{tier}_s{seed}.json` (score: landed/safe, touchdown speeds, site error,
 propellant left) and the full recorded log. One episode alone:
 `uv run python -m luminary_agent.eval.run_set --tiers 2 --seeds 0 --workers 1`.
+`make eval` runs the 15-episode dev set.
 
 ## Setup
 
 ```sh
 make setup   # uv sync + pre-commit install
 make agc     # build yaYUL + yaAGC from the pinned virtualagc submodule
-make test
+make test    # unit tests (fast); integration tests need `make agc` first
+make lint
 ```
 
 ## Pure Luminary vs a manual takeover
 
 ```sh
-uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20200 --out results/logs/nullhard
-uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20300 --policy scripted --out results/logs/pilot
+uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20200 --policy null --out results/logs/null
+uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20300 --policy scripted --out results/logs/scripted
 ```
 
 Tier 3 hides a navigation error from the AGC. Luminary alone crashes (0/2 safe); a crew taking

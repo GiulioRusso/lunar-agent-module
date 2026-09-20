@@ -1,8 +1,7 @@
 """LM Descent Propulsion System (DPS): throttle law and mass flow.
 
-Approximate Apollo-11-class constants (APOLLO_AGENT_PLAN.md Phase 1); Phase 2 replaces
-these with cited NTRS/Apollo-11-Mission-Report values as part of the flight-context
-taxonomy work -- these are physically-reasonable placeholders, not sourced numbers.
+Thrust is calibrated to Luminary's own throttle constants (see FMAX_DETENT_N below); the
+specific impulse (311 s) is an Apollo-class value, not read from the flight software.
 
 The DPS is not continuously throttleable across its whole range: it can be commanded
 anywhere from 10%-60% of rated thrust, but between 60% and a fixed ~92.5% detent the

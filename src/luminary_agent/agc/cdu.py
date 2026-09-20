@@ -1,4 +1,4 @@
-"""Gimbal-angle (CDU) counts: conversion, reading what Luminary wants, and seeding the registers.
+"""Gimbal-angle (CDU) counts: reading what Luminary wants, and seeding the registers.
 
 Each CDU register counts a full revolution in 2**15 = 32768 pulses (0.010986 deg each; the same
 scale sensors.CDU_SCALE_RAD is built from). Luminary's desired gimbal angles for a maneuver are in
@@ -21,14 +21,6 @@ from luminary_agent.agc.symbols import SymbolTable
 
 COUNTS_PER_REV = 1 << 15
 CDU_REGISTERS = (REG_CDUX, REG_CDUY, REG_CDUZ)
-
-
-def counts_to_degrees(counts: int) -> float:
-    return counts * 360.0 / COUNTS_PER_REV
-
-
-def degrees_to_counts(degrees: float) -> int:
-    return round(degrees * COUNTS_PER_REV / 360.0)
 
 
 def desired_gimbal_counts(dump: CoreDump, symbols: SymbolTable) -> tuple[int, int, int]:

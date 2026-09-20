@@ -1,4 +1,4 @@
-"""Run a set of NullAgent episodes in parallel and print a results table.
+"""Run a set of episodes (one policy) in parallel and print a results table.
 
     python -m luminary_agent.eval.run_set --tiers 1 2 3 --seeds 0 1 --workers 3
     python -m luminary_agent.eval.run_set --set dev --out results/logs/dev   # or --set frozen
@@ -15,6 +15,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from luminary_agent.eval.report import summarize
 from luminary_agent.eval.sets import SETS
@@ -22,7 +23,7 @@ from luminary_agent.policies.scripted import POLICIES
 from luminary_agent.viz.replay import build
 
 
-async def one(tier: int, seed: int, port: int, out: Path, policy: str) -> dict[str, object]:
+async def one(tier: int, seed: int, port: int, out: Path, policy: str) -> dict[str, Any]:
     stem = out / f"t{tier}_s{seed}"
     if not stem.with_suffix(".json").exists():
         proc = await asyncio.create_subprocess_exec(
@@ -36,7 +37,8 @@ async def one(tier: int, seed: int, port: int, out: Path, policy: str) -> dict[s
             raise RuntimeError(f"episode tier {tier} seed {seed} failed (see its traceback above)")
         stem.with_suffix(".json").write_text(stdout.decode().strip().splitlines()[-1])
         build(Path(str(stem) + ".jsonl.gz"), stem.with_suffix(".html"))
-    return json.loads(stem.with_suffix(".json").read_text())  # type: ignore[no-any-return]
+    result: dict[str, Any] = json.loads(stem.with_suffix(".json").read_text())
+    return result
 
 
 async def main(
@@ -45,11 +47,10 @@ async def main(
     out.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(workers)
 
-    async def guarded(i: int, t: int, s: int) -> dict[str, object]:
+    async def guarded(i: int, t: int, s: int) -> dict[str, Any]:
         async with sem:
             r = await one(t, s, port_base + i, out, policy)
         sc = r["score"]
-        assert isinstance(sc, dict)
         verdict = "SAFE" if sc["safe"] else "FAIL"
         print(
             f"tier {t} seed {s}: {verdict}  vz {sc['vertical_ms']:.2f}  "
@@ -60,7 +61,7 @@ async def main(
         return r
 
     results = await asyncio.gather(*(guarded(i, t, s) for i, (t, s) in enumerate(jobs)))
-    safe = sum(1 for r in results if r["score"]["safe"])  # type: ignore[index, misc]
+    safe = sum(1 for r in results if r["score"]["safe"])
     print(f"\n{safe}/{len(results)} safe landings; replays: {out}/*.html\n")
     print(summarize(out))
 

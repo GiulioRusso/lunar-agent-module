@@ -3,8 +3,8 @@
 Each dispersion is a difference between the world and Luminary's belief about it (the AGC is
 loaded with the nominal state vector and mass; only the plant deviates), which is what makes an
 episode a decision problem rather than a replay. An error in the start state is never corrected by
-the AGC -- there is no landing-radar model yet -- so `dh0_m` lands the vehicle high or low by that
-much unless someone intervenes.
+the AGC (it gets no radar data), so `dh0_m` lands the vehicle high or low by that much unless
+someone intervenes.
 
 Tiers (frozen eval sets are `sample(seed, tier)` for fixed seeds; never re-draw after tuning):
   1  gentle: thrust +-0.5 %, velocity error 0.005 m/s, up to 2 % less propellant
@@ -30,6 +30,7 @@ from luminary_agent.plant.radar import Radar
 
 LOADED_MASS_KG = 15_000.0
 NOMINAL_PROPELLANT_KG = 8_200.0  # usable descent propellant; the nominal landing leaves ~570 kg
+NOMINAL_DRY_MASS_KG = LOADED_MASS_KG - NOMINAL_PROPELLANT_KG
 
 _TIERS = {  # (thrust_frac, dh_m, dv_ms, mass_frac, propellant_shortfall_frac)
     1: (0.005, 0.0, 0.005, 0.01, 0.02),

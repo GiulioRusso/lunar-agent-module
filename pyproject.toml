@@ -11,9 +11,6 @@ dependencies = [
     "numpy>=2.5.3",
 ]
 
-[project.scripts]
-luminary-agent = "luminary_agent:main"
-
 [dependency-groups]
 dev = [
     "ruff>=0.8",

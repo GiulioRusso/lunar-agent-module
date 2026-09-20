@@ -14,7 +14,6 @@ SAMPLE = (
 
 def test_switched_erasable_ecadr_is_bank_times_0400_plus_offset() -> None:
     t = parse_listing(SAMPLE)
-    assert t.erasable_address("REFSMMAT") == 0o1733
     assert t.ecadr("REFSMMAT") == 3 * 0o400 + 0o333
     assert t.ecadr("TLAND") == 5 * 0o400 + 0  # first word of bank 5's window
 

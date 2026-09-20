@@ -40,7 +40,7 @@ from luminary_agent.plant.radar import Radar
 from luminary_agent.plant.surface import downrange_error_m, horizontal_speed_relative_to_surface
 from luminary_agent.plant.throttle import ThrottleActuator
 from luminary_agent.policies.base import Policy
-from luminary_agent.scenarios.dispersions import Dispersion
+from luminary_agent.scenarios.dispersions import NOMINAL_DRY_MASS_KG, Dispersion
 from luminary_agent.sim.clock import SteppedClock
 from luminary_agent.sim.executor import Executor
 from luminary_agent.sim.frames import LunarFrame
@@ -51,6 +51,8 @@ from luminary_agent.sim.p63_crew import start_p63
 from luminary_agent.sim.recorder import Recorder
 
 ALARM_CHECK_EVERY_TICKS = 50  # once per simulated second
+MIN_DECISION_PERIOD_S = 0.5
+FT_TO_M = 0.3048
 LANDING_PROGRAMS = frozenset({63, 64, 65, 66, 67})
 
 
@@ -116,22 +118,51 @@ def _make_sim(
     )
 
 
-FT_TO_M = 0.3048
-
-
 def observe(
     sim: Simulation, client: AgcClient, mode: str, t: float, alarms: list[int], radar: Radar
 ) -> Observation:
     d, s = client.dsky, sim.state
-    dry = sim.dry_mass_kg if sim.dry_mass_kg is not None else 6_800.0
-    shows_altitude = d.program_number in (63, 64) and d.noun_number in (63, 64) and d.r3 is not None
+    dry = sim.dry_mass_kg if sim.dry_mass_kg is not None else NOMINAL_DRY_MASS_KG
+    # Luminary's own altitude is the DSKY's R3 (feet) while N63/N64 is displayed.
+    shows_altitude = d.program_number in (63, 64) and d.noun_number in (63, 64)
     agc_alt = d.r3 * FT_TO_M if shows_altitude and d.r3 is not None else None
     return Observation(
         t, mode, d.program_number, d.verb_number, d.noun_number, d.r1, d.r2, d.r3, tuple(alarms),
         radar.altitude(s.h_m, t), agc_alt, s.hdot_ms, horizontal_speed_relative_to_surface(s),
-        sim.thrust_n, s.mass_kg,
-        max(0.0, s.mass_kg - dry),
+        sim.thrust_n, s.mass_kg, max(0.0, s.mass_kg - dry),
     )  # fmt: skip
+
+
+async def _consult(
+    policy: Policy,
+    executor: Executor,
+    sim: Simulation,
+    client: AgcClient,
+    t: float,
+    alarms: list[int],
+    radar: Radar,
+    notes: list[str],
+) -> float:
+    """One agent decision: observe, decide (the whole simulation is paused meanwhile), apply, log.
+    Returns the plant time of the next decision."""
+    obs = observe(sim, client, executor.mode, t, alarms, radar)
+    started = time.perf_counter()
+    intent = policy.decide(obs, t)
+    latency_s = time.perf_counter() - started
+    applied = await executor.apply(intent)
+    if sim.recorder is not None:
+        sim.recorder.event(
+            {
+                "t": round(t, 3),
+                "obs": obs.to_dict(),
+                "intent": {"kind": intent.kind, "params": intent.params},
+                "applied": applied,
+                "latency_s": round(latency_s, 4),
+            }
+        )
+    if intent.kind == "take_manual" and applied.startswith("ok"):
+        notes.append(f"manual takeover at plant t={t:.1f} s, h={sim.state.h_m:.0f} m")
+    return max(intent.valid_until_s, t + MIN_DECISION_PERIOD_S)
 
 
 async def _fly(
@@ -147,8 +178,8 @@ async def _fly(
     notes: list[str],
     on_second: Callable[[Simulation, CoreDump], None] | None,
     checkpoint: tuple[float, Path] | None,
-    policy: Policy | None = None,
-    radar: Radar | None = None,
+    policy: Policy | None,
+    radar: Radar,
 ) -> DescentResult:
     dsky = SteppedDsky(agc, client, advance=sim.advance_instructions)
     failreg = symbols.ecadr("FAILREG")
@@ -166,26 +197,11 @@ async def _fly(
         await sim.tick()
         t = sim.t_offset_s + clock.sim_time_s
 
-        d = client.dsky
         if policy is not None and t >= next_decision_t:
-            obs = observe(sim, client, executor.mode, t, alarms_seen, radar or Radar())
-            started = time.perf_counter()
-            intent = policy.decide(obs, t)  # the whole simulation is paused while this runs
-            latency_s = time.perf_counter() - started
-            applied = await executor.apply(intent)
-            if sim.recorder is not None:
-                sim.recorder.event(
-                    {
-                        "t": round(t, 3),
-                        "obs": obs.to_dict(),
-                        "intent": {"kind": intent.kind, "params": intent.params},
-                        "applied": applied,
-                        "latency_s": round(latency_s, 4),
-                    }
-                )
-            if intent.kind == "take_manual" and applied.startswith("ok"):
-                notes.append(f"manual takeover at plant t={t:.1f} s, h={sim.state.h_m:.0f} m")
-            next_decision_t = max(intent.valid_until_s, t + 0.5)
+            next_decision_t = await _consult(
+                policy, executor, sim, client, t, alarms_seen, radar, notes
+            )
+        d = client.dsky
         if engine_enabled_at is None and d.verb_number == 99 and d.noun_number == 62:
             await dsky.verb(33)  # the crew enables the engine
             engine_enabled_at = sim.t_offset_s + clock.sim_time_s
@@ -238,10 +254,9 @@ async def run_descent(
 ) -> DescentResult:
     """`policy` is called on a cadence with an Observation and returns an Intent (sim/executor.py);
     the simulation is paused while it decides. `dispersion` makes the plant differ from what the
-    AGC was told (scenarios/dispersions.py).
-    `on_second`, if given, is called once per simulated second with the plant and a fresh
-    core dump -- the hook for comparing the AGC's belief with the plant's truth. `checkpoint` =
-    (plant time in s since the epoch, path) saves a resumable checkpoint when that time passes.
+    AGC was told (scenarios/dispersions.py). `on_second`, if given, is called once per simulated
+    second with the plant and a fresh core dump (compare the AGC's belief with the truth).
+    `checkpoint` = (plant time in s since the epoch, path) saves a resumable checkpoint then.
     """
     epoch_s = setup.now_cs / 100.0
     burn_attitude = await start_p63(agc, client, symbols)
@@ -346,7 +361,7 @@ async def resume_descent(
     notes = [f"resumed from {checkpoint_path.name} at plant t={saved['t_plant_s']:.1f} s"]
     return await _fly(
         agc, client, symbols, setup, sim, clock, saved["t_plant_s"], max_sim_s,
-        saved["engine_enabled_at"], notes, on_second, None,
+        saved["engine_enabled_at"], notes, on_second, None, None, Radar(),
     )  # fmt: skip
 
 

@@ -10,7 +10,8 @@ Luminary writes a new THRUST *increment* (plant/throttle.py) and stamps TTHROT w
 loop takes a guidance sample (a ~15 ms core dump) at engine ignition and then every
 `guidance_every_ticks`, applies the increment when the stamp has changed, and re-points the
 thrust along the freshly-written UNFC/2 every time. Engine on/off comes from CHAN11.
-Without an actuator the `throttle` callable is used directly (tests, null baselines).
+Without an actuator the `throttle` callable is used directly (tests). Once `manual` is set (crew
+takeover, sim/executor.py) throttle and pitch come from it and the AGC's commands are ignored.
 
 Out of plane: the plant is planar, but the thrust the AGC commands is not. The out-of-plane
 component drives a small lateral channel (z, zdot; linearised about the orbit plane) that the
@@ -39,8 +40,8 @@ from luminary_agent.plant.lunar_orientation import Mat
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.sensors import Imu
 from luminary_agent.plant.throttle import ThrottleActuator
-from luminary_agent.sim.clock import SimClock, SteppedClock
-from luminary_agent.sim.frames import LunarFrame, cross, dot, mat_vec, theta_rad
+from luminary_agent.sim.clock import INITIAL_CYCLES_PER_INSTRUCTION, SimClock, SteppedClock
+from luminary_agent.sim.frames import LunarFrame, dot, mat_vec, theta_rad
 from luminary_agent.sim.recorder import Recorder
 
 
@@ -105,7 +106,8 @@ class Simulation:
 
         Stable member -> reference frame (REFSMMAT^T), then onto the plant's local axes at the
         present angle; pitch is measured from local vertical, positive decelerating the
-        tangential velocity (plant/dynamics.py). Any out-of-plane component is dropped.
+        tangential velocity (plant/dynamics.py). The out-of-plane share is kept in
+        `normal_fraction` for the lateral channel.
         """
         m = self.refsmmat
         ref = (
@@ -117,13 +119,13 @@ class Simulation:
         theta = theta_rad(self.state)
         radial = ex * math.cos(theta) + ey * math.sin(theta)
         tangential = -ex * math.sin(theta) + ey * math.cos(theta)
-        normal = dot(ref, cross(self.frame.e1, self.frame.e2))
+        normal = dot(ref, self.frame.normal)
         in_plane = math.hypot(radial, tangential)
-        # ponytail: a near-zero in-plane part (hover, thrust nearly along the normal) keeps the
-        # last pitch instead of flipping on numerical noise.
+        # A near-zero in-plane part (thrust nearly along the normal) keeps the last pitch instead
+        # of flipping on numerical noise.
         if in_plane > 1e-3 * abs(normal) and in_plane > 1e-9:
             self.pitch_rad = math.atan2(-tangential, radial)
-        self.normal_fraction = normal / math.sqrt(in_plane**2 + normal**2 or 1.0)
+        self.normal_fraction = normal / (math.hypot(in_plane, normal) or 1.0)
 
     async def _service_throttle(self) -> float:
         """Fold the AGC's engine and throttle commands into the actuator; return throttle."""
@@ -163,13 +165,9 @@ class Simulation:
         # axes with REFSMMAT.
         sf_radial = thrust_n * math.cos(control.pitch_rad) / self.state.mass_kg
         sf_tangential = -thrust_n * math.sin(control.pitch_rad) / self.state.mass_kg
-        sf_ref = self.frame.specific_force_ref(sf_radial, sf_tangential, theta_rad(self.state))
         sf_normal = thrust_n * self.normal_fraction / self.state.mass_kg
-        n = cross(self.frame.e1, self.frame.e2)
-        sf_ref = (
-            sf_ref[0] + sf_normal * n[0],
-            sf_ref[1] + sf_normal * n[1],
-            sf_ref[2] + sf_normal * n[2],
+        sf_ref = self.frame.specific_force_ref(
+            sf_radial, sf_tangential, theta_rad(self.state), sf_normal
         )
         sf_sm = mat_vec(self.refsmmat, sf_ref)
         r = R_MOON + self.state.h_m
@@ -224,7 +222,11 @@ class Simulation:
         """Let `instructions` AGC instructions elapse *with the plant alongside* -- the hook to
         hand to SteppedDsky so that key presses advance both together. Rounded to whole ticks.
         """
-        cpi = self.clock.cycles_per_instruction if isinstance(self.clock, SteppedClock) else 1.62
+        cpi = (
+            self.clock.cycles_per_instruction
+            if isinstance(self.clock, SteppedClock)
+            else INITIAL_CYCLES_PER_INSTRUCTION
+        )
         seconds = instructions * cpi / AGC_CYCLES_PER_SECOND
         for _ in range(max(1, round(seconds / self.dt_s))):
             await self.tick()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from luminary_agent.scenarios.dispersions import NOMINAL_DRY_MASS_KG
 from luminary_agent.sim.descent import DescentResult
 
 MAX_VERTICAL_MS = 3.0
@@ -23,7 +24,7 @@ class Score:
         return dict(self.__dict__)
 
 
-def score(result: DescentResult, dry_mass_kg: float = 6_800.0) -> Score:
+def score(result: DescentResult, dry_mass_kg: float = NOMINAL_DRY_MASS_KG) -> Score:
     landed = result.outcome == "touchdown"
     v, hz = abs(result.vertical_ms), abs(result.horizontal_relative_ms)
     return Score(
