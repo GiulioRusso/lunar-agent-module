@@ -33,3 +33,13 @@ make setup   # uv sync + pre-commit install
 make agc     # build yaYUL + yaAGC from the pinned virtualagc submodule
 make test
 ```
+
+## Pure Luminary vs a manual takeover
+
+```sh
+uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20200 --out results/logs/nullhard
+uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20300 --pilot manual --out results/logs/pilot
+```
+
+Tier 3 hides a navigation error from the AGC. Luminary alone crashes (0/2 safe); a crew taking
+manual throttle and reading the radar lands 2/2. Give concurrent batches distinct `--port-base`s.

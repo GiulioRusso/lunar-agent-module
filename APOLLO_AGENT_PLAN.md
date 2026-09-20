@@ -687,6 +687,16 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       from a sourced document (Luminary 1A pad-load listing / GSOP) -- not guessed.
       Until both are resolved, the sourceable scenario axes are those that need no new actuation:
       fuel margin, engine degradation, alarms, and (if modelled) the landing radar.
+      **Manual takeover works, and it is the first scenario where a decision matters.** Luminary's
+      polled R13 monitor (GUILDENSTERN) selects P67 when the auto-throttle discrete (CHAN30 bit 5)
+      clears, with no ROD click needed (verified: `MODREG` = 103, AGC stops commanding thrust) --
+      unlike ROD, this is deliverable through the socket. `policies/manual_lander.py` flies from the
+      plant's truth (radar-like) inside the DPS limits; `run_set --pilot manual`. **Tier 3 = a
+      navigation error the AGC cannot see (0.3 m/s, 100 m): pure Luminary 0/2 safe (vz 2.1/3.2,
+      vh 19/13 m/s), manual takeover 2/2 safe (vz 0.33/0.40, vh 0.00).** Caveats: n = 2; the pilot
+      does not steer to the site (site error ~600 m); its takeover rule is fixed (h <= 150 m or
+      P65), not yet a decision; ROD (P66) remains blocked (see above). The pilot, not the AGC, is
+      now the thing an LLM agent will replace: it decides *when* to take over and what to command.
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,
