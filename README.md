@@ -38,8 +38,16 @@ make test
 
 ```sh
 uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20200 --out results/logs/nullhard
-uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20300 --pilot manual --out results/logs/pilot
+uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20300 --policy scripted --out results/logs/pilot
 ```
 
 Tier 3 hides a navigation error from the AGC. Luminary alone crashes (0/2 safe); a crew taking
 manual throttle and reading the radar lands 2/2. Give concurrent batches distinct `--port-base`s.
+
+## Plugging in an agent
+
+A policy implements `luminary_agent.policies.base.Policy` (`decide(obs, t_s) -> Intent`, `reset()`),
+is registered in `policies/scripted.py:POLICIES`, and runs with
+`python -m luminary_agent.eval.run_episode TIER SEED PORT WORKDIR --policy NAME --log ep.jsonl.gz`.
+The simulation (plant and AGC) is paused while `decide` runs. See `sim/observation.py` for what it
+sees and `sim/executor.py` for what it can do.

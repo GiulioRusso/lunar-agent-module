@@ -697,6 +697,29 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       does not steer to the site (site error ~600 m); its takeover rule is fixed (h <= 150 m or
       P65), not yet a decision; ROD (P66) remains blocked (see above). The pilot, not the AGC, is
       now the thing an LLM agent will replace: it decides *when* to take over and what to command.
+      **AGENT INTERFACE IS IN PLACE (the seam Track B plugs into).** `policies/base.py` `Policy`:
+      `decide(obs, t_s) -> Intent`, called on a cadence (>= 0.5 s sim time, or when the previous
+      intent's `valid_until_s` lapses) **while the whole simulation is paused**, so a slow policy
+      costs wall time, not simulated time (per-decision wall latency is recorded -- the input to
+      the realtime-vs-stepped result). `Observation` (`sim/observation.py`) is all an agent sees:
+      DSKY (prog/verb/noun/R1-R3), alarms raised, radar-like altitude / vertical rate /
+      surface-relative horizontal speed, thrust, mass, propellant, mode; `to_text()` for an LLM.
+      Intents: `hold`, `take_manual` (irreversible; clears CHAN30 bit 5 -> Luminary P67),
+      `command(descent_rate_ms, horizontal_ms)` (targets for the `ManualController`, clamped to
+      [-6, 0] m/s and +-5 m/s, clamping reported). `sim/executor.py` applies them and returns what
+      happened ("ok", "rejected: take_manual first", ...) -- never guesses. Every decision (obs,
+      intent, applied, latency) goes into the episode log; `NullAgent` and `ScriptedAgent`
+      (`policies/scripted.py`) are the two non-learning baselines; `run_episode --policy
+      null|scripted` (an LLM policy is one more entry in `POLICIES`). Verified end to end:
+      scripted through this path lands tier 3 seed 0 (vz 0.33, vh 0.00, takeover at t = 793 s,
+      808 decisions logged). **Viewer** now shows the DSKY (PROG/V/N/R1-R3), AUTO/MANUAL badge,
+      alarms, surface-relative horizontal speed, and a clickable decision log.
+      **Still open before the *first LLM run* is meaningful:** (a) the agent can only take over and
+      pick vertical/horizontal targets -- no abort, no site redesignation (ROD/LPD blocked as above;
+      abort needs an ascent plant); (b) no landing-radar dropouts/discrepancy events yet, so
+      "when to trust the radar" is not a decision; (c) no in-flight faults (engine degradation,
+      1201/1202) -- tier 3 is the only scenario where the choice matters; (d) realtime clock mode
+      is not driven end to end; (e) the LLM policy itself, prompts and tool schema (Track B).
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,

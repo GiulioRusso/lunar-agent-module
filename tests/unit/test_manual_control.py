@@ -5,11 +5,11 @@ from luminary_agent.plant.surface import (
     MOON_RATE_RAD_S,
     horizontal_speed_relative_to_surface,
 )
-from luminary_agent.policies.manual_lander import ManualLander
+from luminary_agent.sim.manual_control import ManualController
 
 
 def _land(state: PlanarState) -> PlanarState:
-    pilot, engine = ManualLander(), DescentEngine()
+    pilot, engine = ManualController(), DescentEngine()
     for _ in range(int(400 / DT_S)):
         throttle, pitch = pilot.control(state)
         state = step(state, Control(throttle, pitch), engine, DT_S)
@@ -24,10 +24,3 @@ def test_lands_softly_from_fast_high_start() -> None:
     assert end.h_m <= 0.0
     assert abs(end.hdot_ms) <= 3.0
     assert abs(horizontal_speed_relative_to_surface(end)) <= 1.2
-
-
-def test_takeover_rule() -> None:
-    p = ManualLander(takeover_h_m=150.0)
-    s = PlanarState(200.0, 0.0, 0.0, 0.0, 7000.0)
-    assert not p.wants_manual(s, 64) and p.wants_manual(s, 65)
-    assert p.wants_manual(PlanarState(100.0, 0.0, 0.0, 0.0, 7000.0), 64)

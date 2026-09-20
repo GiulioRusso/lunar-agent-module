@@ -33,6 +33,10 @@ class Recorder:
     def tick(self, record: dict[str, Any]) -> None:
         self._write({"type": "tick", **record})
 
+    def event(self, record: dict[str, Any]) -> None:
+        """An agent decision (type "decision"), interleaved with ticks in time order."""
+        self._write({"type": "decision", **record})
+
     def close(self) -> None:
         self._fh.close()
 
@@ -70,3 +74,9 @@ def read_episode(path: Path) -> tuple[dict[str, Any], Iterator[dict[str, Any]]]:
                     yield record
 
     return header, ticks()
+
+
+def read_decisions(path: Path) -> list[dict[str, Any]]:
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        records = (json.loads(line) for line in fh)
+        return [r for r in records if r.get("type") == "decision"]

@@ -22,10 +22,11 @@ the plant (its effect on the *judgement* of a landing is handled in plant/surfac
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.coredump import CoreDump
@@ -33,30 +34,20 @@ from luminary_agent.agc.process import AgcProcess
 from luminary_agent.agc.registers import REG_PIPAX, REG_PIPAY, REG_PIPAZ
 from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import SymbolTable
-from luminary_agent.plant.discretes import Discretes
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.surface import downrange_error_m, horizontal_speed_relative_to_surface
 from luminary_agent.plant.throttle import ThrottleActuator
+from luminary_agent.policies.base import Policy
 from luminary_agent.scenarios.dispersions import Dispersion
 from luminary_agent.sim.clock import SteppedClock
+from luminary_agent.sim.executor import Executor
 from luminary_agent.sim.frames import LunarFrame
 from luminary_agent.sim.landing_scenario import DescentScenario, LandingSetup
 from luminary_agent.sim.loop import PipaAxes, Simulation, stepped_guidance_reader
+from luminary_agent.sim.observation import Observation
 from luminary_agent.sim.p63_crew import start_p63
 from luminary_agent.sim.recorder import Recorder
-
-
-class Pilot(Protocol):
-    """Crew takeover: `wants_manual` is polled every tick until it says yes; from then on the
-    pilot commands (throttle fraction, thrust pitch) via `control`."""
-
-    name: str
-
-    def wants_manual(self, state: PlanarState, program: int | None) -> bool: ...
-
-    def control(self, state: PlanarState) -> tuple[float, float]: ...
-
 
 ALARM_CHECK_EVERY_TICKS = 50  # once per simulated second
 LANDING_PROGRAMS = frozenset({63, 64, 65, 66, 67})
@@ -124,6 +115,18 @@ def _make_sim(
     )
 
 
+def observe(
+    sim: Simulation, client: AgcClient, mode: str, t: float, alarms: list[int]
+) -> Observation:
+    d, s = client.dsky, sim.state
+    dry = sim.dry_mass_kg if sim.dry_mass_kg is not None else 6_800.0
+    return Observation(
+        t, mode, d.program_number, d.verb_number, d.noun_number, d.r1, d.r2, d.r3, tuple(alarms),
+        s.h_m, s.hdot_ms, horizontal_speed_relative_to_surface(s), sim.thrust_n, s.mass_kg,
+        max(0.0, s.mass_kg - dry),
+    )  # fmt: skip
+
+
 async def _fly(
     agc: AgcProcess,
     client: AgcClient,
@@ -137,7 +140,7 @@ async def _fly(
     notes: list[str],
     on_second: Callable[[Simulation, CoreDump], None] | None,
     checkpoint: tuple[float, Path] | None,
-    pilot: Pilot | None = None,
+    policy: Policy | None = None,
 ) -> DescentResult:
     dsky = SteppedDsky(agc, client, advance=sim.advance_instructions)
     failreg = symbols.ecadr("FAILREG")
@@ -146,26 +149,35 @@ async def _fly(
     landing_started = False
     checkpointed = False
     result: DescentResult | None = None
+    executor = Executor(sim, client)
+    next_decision_t = float("-inf")
+    if policy is not None:
+        policy.reset()
 
     while result is None:
         await sim.tick()
         t = sim.t_offset_s + clock.sim_time_s
 
         d = client.dsky
-        if (
-            pilot is not None
-            and sim.manual is None
-            and pilot.wants_manual(sim.state, d.program_number)
-        ):
-            # Manual throttle discrete (CHAN30 bit 5): Luminary's R13 monitor selects P67 and
-            # stops commanding the engine; the crew's control takes over in the plant.
-            await client.write_channels(
-                Discretes(lr_position_1=True, auto_throttle=False).channel_words()
-            )
-            sim.manual = pilot.control
-            notes.append(
-                f"manual takeover (P67 requested) at plant t={t:.1f} s, h={sim.state.h_m:.0f} m"
-            )
+        if policy is not None and t >= next_decision_t:
+            obs = observe(sim, client, executor.mode, t, alarms_seen)
+            started = time.perf_counter()
+            intent = policy.decide(obs, t)  # the whole simulation is paused while this runs
+            latency_s = time.perf_counter() - started
+            applied = await executor.apply(intent)
+            if sim.recorder is not None:
+                sim.recorder.event(
+                    {
+                        "t": round(t, 3),
+                        "obs": obs.to_dict(),
+                        "intent": {"kind": intent.kind, "params": intent.params},
+                        "applied": applied,
+                        "latency_s": round(latency_s, 4),
+                    }
+                )
+            if intent.kind == "take_manual" and applied.startswith("ok"):
+                notes.append(f"manual takeover at plant t={t:.1f} s, h={sim.state.h_m:.0f} m")
+            next_decision_t = max(intent.valid_until_s, t + 0.5)
         if engine_enabled_at is None and d.verb_number == 99 and d.noun_number == 62:
             await dsky.verb(33)  # the crew enables the engine
             engine_enabled_at = sim.t_offset_s + clock.sim_time_s
@@ -214,9 +226,11 @@ async def run_descent(
     on_second: Callable[[Simulation, CoreDump], None] | None = None,
     checkpoint: tuple[float, Path] | None = None,
     dispersion: Dispersion | None = None,
-    pilot: Pilot | None = None,
+    policy: Policy | None = None,
 ) -> DescentResult:
-    """`dispersion` makes the plant differ from what the AGC was told (scenarios/dispersions.py).
+    """`policy` is called on a cadence with an Observation and returns an Intent (sim/executor.py);
+    the simulation is paused while it decides. `dispersion` makes the plant differ from what the
+    AGC was told (scenarios/dispersions.py).
     `on_second`, if given, is called once per simulated second with the plant and a fresh
     core dump -- the hook for comparing the AGC's belief with the plant's truth. `checkpoint` =
     (plant time in s since the epoch, path) saves a resumable checkpoint when that time passes.
@@ -247,7 +261,7 @@ async def run_descent(
     )
     return await _fly(
         agc, client, symbols, setup, sim, clock, elapsed_s, max_sim_s, None, notes,
-        on_second, checkpoint, pilot,
+        on_second, checkpoint, policy,
     )  # fmt: skip
 
 

@@ -88,6 +88,7 @@ class Simulation:
         self.dt_s = dt_s
         self.imu = Imu()
         self.ticks = 0
+        self.thrust_n = 0.0
         self.actuator = actuator
         self.t_offset_s = t_offset_s  # plant time at clock time zero (epoch to run start)
         self._read_guidance_sample = read_guidance_sample
@@ -154,6 +155,7 @@ class Simulation:
             throttle = 0.0
         control = Control(throttle=throttle, pitch_rad=self.pitch_rad)
         thrust_n, _ = self.engine.thrust_and_mdot(control.throttle)
+        self.thrust_n = thrust_n
 
         # An accelerometer senses specific force (thrust / mass), never gravity. It sits on an
         # inertially-fixed stable member, so rotate the local (radial, tangential) thrust
@@ -201,6 +203,7 @@ class Simulation:
             "vt_ms": self.state.xdot_ms,
             "mass_kg": self.state.mass_kg,
             "thrust_n": thrust_n,
+            "mode": "auto" if self.manual is None else "manual",
             "pitch_deg": math.degrees(self.pitch_rad),
             "pipa_pulses": list(pulses),
             "dsky": {
