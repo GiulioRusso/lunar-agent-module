@@ -28,13 +28,13 @@ const k=document.getElementById('k');k.max=N-1;
 function draw(){
  const d=D[i],h=d[ix.h_m],x=d[ix.x_m],W=cv.width,H=cv.height;
  g.clearRect(0,0,W,H);
- const span=Math.max(120,h*3),sc=W/span,gy=H*0.82,cyy=y=>gy-Math.min(y,H*3)*sc;
+ const span=Math.max(120,h*3),sc=W/span,gy=H*0.82,cyy=y=>gy-y*sc;
  g.strokeStyle=col('--dim');g.lineWidth=1;g.beginPath();
  for(let px=0;px<=W;px+=3){const wx=x+(px-W/2)/sc;const y=gy+(-terr(wx)*0.3)*Math.min(1,sc*4);
   px?g.lineTo(px,y):g.moveTo(px,y)}g.stroke();
  g.fillStyle=col('--dim');g.font='11px monospace';
  const grid=[10,50,100,500,1000,5000,10000].find(s=>s*sc>50)||10000;
- for(let a=grid;cyy(a)>10;a+=grid){g.fillText(a+' m',4,cyy(a)-2);g.globalAlpha=.2;g.fillRect(0,cyy(a),W,1);g.globalAlpha=1}
+ for(let a=grid;a*sc<gy-10;a+=grid){g.fillText(a+' m',4,cyy(a)-2);g.globalAlpha=.2;g.fillRect(0,cyy(a),W,1);g.globalAlpha=1}
  const lx=W/2,ly=cyy(h)-0,pit=d[ix.pitch_deg]*Math.PI/180,th=d[ix.thrust_n];
  g.save();g.translate(lx,ly);g.strokeStyle=col('--fg');g.lineWidth=2;
  g.strokeRect(-8,-16,16,14);g.beginPath();g.moveTo(-14,0);g.lineTo(-8,-4);g.moveTo(14,0);g.lineTo(8,-4);g.stroke();
