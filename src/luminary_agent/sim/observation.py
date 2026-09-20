@@ -18,7 +18,8 @@ class Observation:
     r2: int | None
     r3: int | None
     alarms: tuple[int, ...]  # program alarm codes raised so far (octal digits as an int)
-    altitude_m: float  # radar altitude, above the surface
+    radar_altitude_m: float | None  # None: no radar lock
+    agc_altitude_m: float | None  # Luminary's own altitude on the DSKY (N63/N64 R3), if shown
     vertical_ms: float  # positive up
     horizontal_ms: float  # velocity relative to the rotating surface, positive downrange
     thrust_n: float
@@ -29,11 +30,15 @@ class Observation:
         return asdict(self)
 
     def to_text(self) -> str:
+        def fmt(v: float | None) -> str:
+            return "none" if v is None else f"{v:.0f}m"
+
         alarms = ",".join(f"{a:o}" for a in self.alarms) or "none"
         return (
             f"t={self.t_s:.0f}s mode={self.mode} P{self.program} V{self.verb} N{self.noun} "
             f"R1={self.r1} R2={self.r2} R3={self.r3} alarms={alarms}\n"
-            f"alt={self.altitude_m:.1f}m vz={self.vertical_ms:+.2f}m/s "
+            f"radar_alt={fmt(self.radar_altitude_m)} agc_alt={fmt(self.agc_altitude_m)} "
+            f"vz={self.vertical_ms:+.2f}m/s "
             f"vh={self.horizontal_ms:+.2f}m/s thrust={self.thrust_n:.0f}N "
             f"mass={self.mass_kg:.0f}kg propellant={self.propellant_kg:.0f}kg"
         )

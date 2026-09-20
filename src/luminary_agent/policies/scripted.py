@@ -28,7 +28,8 @@ class ScriptedAgent:
         self.takeover_h_m = takeover_h_m
 
     def decide(self, obs: Observation, t_s: float) -> Intent:
-        if obs.mode == "auto" and (obs.altitude_m <= self.takeover_h_m or obs.program == 65):
+        radar_low = obs.radar_altitude_m is not None and obs.radar_altitude_m <= self.takeover_h_m
+        if obs.mode == "auto" and (radar_low or obs.program == 65):
             return take_manual(t_s + 1.0)
         return hold(t_s + 1.0)
 

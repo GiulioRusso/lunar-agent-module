@@ -10,9 +10,10 @@ Tiers (frozen eval sets are `sample(seed, tier)` for fixed seeds; never re-draw 
   1  gentle: thrust +-0.5 %, velocity error 0.005 m/s, up to 2 % less propellant
   2  moderate: thrust +-1.5 %, 10 m altitude error, 0.02 m/s, up to 5 % less propellant
   3  hard: thrust +-3 %, 100 m altitude error, 0.3 m/s, up to 9 % less propellant (a navigation
-     error the AGC cannot see: only a crew reading the radar can land it -- policies/manual_lander)
-The propellant shortfall is the margin a real crew watched (Apollo 11 landed with ~25 s left): the
-engine cuts off when the usable propellant is gone.
+     error the AGC cannot see: only a crew reading the radar can land it -- sim/manual_control)
+Tier 3 also has a radar dead band (no lock over a 150-250 m altitude span somewhere in 100-400 m)
+and every tier a small radar bias. The propellant shortfall is the margin a real crew watched
+(Apollo 11 landed with ~25 s left): the engine cuts off when the usable propellant is gone.
 Scale is set by physics, not taste: with no landing-radar update the AGC never learns a start-state
 error, and a velocity error grows to ~700 m of position error per m/s over the descent (measured:
 0.32 m/s made the AGC hover at 406 m until the propellant ran out; 1 m/s crashed 850 m short).
@@ -25,6 +26,7 @@ from dataclasses import dataclass, replace
 
 from luminary_agent.plant.dynamics import PlanarState
 from luminary_agent.plant.propulsion import DescentEngine
+from luminary_agent.plant.radar import Radar
 
 LOADED_MASS_KG = 15_000.0
 NOMINAL_PROPELLANT_KG = 8_200.0  # usable descent propellant; the nominal landing leaves ~570 kg
@@ -44,6 +46,7 @@ class Dispersion:
     dvt0_ms: float = 0.0
     dvh0_ms: float = 0.0
     propellant_scale: float = 1.0
+    radar: Radar = Radar()
 
     @property
     def dry_mass_kg(self) -> float:
@@ -67,6 +70,14 @@ class Dispersion:
 def sample(seed: int, tier: int) -> Dispersion:
     thrust, dh, dv, mass, prop = _TIERS[tier]
     rng = random.Random(f"{tier}:{seed}")
+    rr = random.Random(f"radar:{tier}:{seed}")  # separate stream: keeps the draws above stable
+    hi = rr.uniform(250.0, 400.0)
+    radar = Radar(
+        dropout_hi_m=hi if tier == 3 else 0.0,
+        dropout_lo_m=hi - rr.uniform(150.0, 250.0) if tier == 3 else 0.0,
+        bias_frac=rr.uniform(-0.01, 0.01) * tier,
+        seed=seed,
+    )
     return Dispersion(
         1.0 + rng.uniform(-thrust, thrust),
         1.0 + rng.uniform(-mass, mass),
@@ -74,4 +85,5 @@ def sample(seed: int, tier: int) -> Dispersion:
         rng.uniform(-dv, dv),
         rng.uniform(-dv, dv),
         1.0 - rng.uniform(0.0, prop),
+        radar,
     )

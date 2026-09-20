@@ -20,7 +20,7 @@ h1{font-size:13px;color:var(--dim);font-weight:normal;margin:12px 0 0}
 <input id=k type=range min=0 value=0 step=1><span id=tt></span></div>
 <div id=dl></div></div>
 <script>
-const F=__FIELDS__,D=__DATA__,DEC=__DEC__,HZ=__HZ__,N=D.length;
+const F=__FIELDS__,D=__DATA__,DEC=__DEC__,ALT=__ALT__,HZ=__HZ__,N=D.length;
 const cv=document.getElementById('cv'),g=cv.getContext('2d'),css=getComputedStyle(document.body);
 const col=n=>css.getPropertyValue(n).trim()||'#888';
 const R=[['t','time s',0],['h_m','altitude m',1],['hdot_ms','vert m/s',2],['vh_rel','horiz rel surface m/s',2],
@@ -37,12 +37,14 @@ DEC.forEach((e,n)=>{const p=Object.entries(e.params).map(([a,b])=>a+'='+b).join(
 dl.onclick=ev=>{const n=ev.target.dataset&&ev.target.dataset.n;if(n===undefined)return;
  const t0=DEC[+n].t;let j=0;while(j<N-1&&D[j][0]<t0)j++;i=j};
 function panel(d){
+ let a=null;for(const e of ALT){if(e[0]>d[0])break;a=e}
+ const fa=v=>v==null?'--':v.toFixed(0)+' m';
  const dec=DEC.filter(e=>e.t<=d[0]),cur=dec.length-1,al=cur>=0?DEC[cur].alarms:[];
  const f=k=>d[ix[k]]==null?'--':d[ix[k]],man=d[ix.mode]==='manual';
  ds.innerHTML='<span><b>MODE</b><span id=md class="'+(man?'man':'')+'">'+(man?'MANUAL':'AUTO')+'</span></span>'+
   '<span><b>PROG</b>'+f('prog')+'</span><span><b>V</b>'+f('verb')+'</span><span><b>N</b>'+f('noun')+'</span>'+
   '<span><b>R1</b>'+f('r1')+'</span><span><b>R2</b>'+f('r2')+'</span><span><b>R3</b>'+f('r3')+'</span>'+
-  '<span><b>ALARMS</b>'+(al.length?al.map(a=>a.toString(8)).join(' '):'none')+'</span>';
+  '<span><b>RADAR ALT</b>'+(a?fa(a[1]):'--')+'</span><span><b>AGC ALT</b>'+(a?fa(a[2]):'--')+'</span><span><b>ALARMS</b>'+(al.length?al.map(a=>a.toString(8)).join(' '):'none')+'</span>';
  [...dl.children].forEach((c,n)=>c.classList.toggle('cur',n===cur));
 }
 function draw(){

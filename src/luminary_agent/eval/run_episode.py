@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from luminary_agent.agc.build import listing_path
@@ -37,7 +38,7 @@ async def run(
                 "policy": policy_name,
                 "tier": tier,
                 "seed": seed,
-                "dispersion": disp.__dict__,
+                "dispersion": asdict(disp),
             }
             if log is None:
                 res = await run_descent(
@@ -55,7 +56,7 @@ async def run(
                         dispersion=disp,
                         policy=policy,
                     )
-    return {"tier": tier, "seed": seed, "dispersion": disp.__dict__,
+    return {"tier": tier, "seed": seed, "dispersion": asdict(disp),
             "score": score(res, disp.dry_mass_kg).as_dict(), "result": summarize(res)}  # fmt: skip
 
 

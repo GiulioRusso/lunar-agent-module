@@ -11,9 +11,25 @@ from luminary_agent.sim.manual_control import ManualController
 from luminary_agent.sim.observation import Observation
 
 
-def _obs(mode: str = "auto", alt: float = 500.0, program: int | None = 64) -> Observation:
-    return Observation(100.0, mode, program, 6, 64, 1, 2, 3, (0o1410,), alt, -2.0, 0.5, 9000.0,
-                       7500.0, 700.0)  # fmt: skip
+def _obs(mode: str = "auto", alt: float | None = 500.0, program: int | None = 64) -> Observation:
+    return Observation(
+        100.0,
+        mode,
+        program,
+        6,
+        64,
+        1,
+        2,
+        3,
+        (0o1410,),
+        alt,
+        520.0,
+        -2.0,
+        0.5,
+        9000.0,
+        7500.0,
+        700.0,
+    )
 
 
 class _Client:
@@ -32,8 +48,8 @@ def _executor() -> tuple[Executor, _Client, Any]:
 
 def test_observation_text_and_dict() -> None:
     o = _obs()
-    assert "alarms=1410" in o.to_text() and "alt=500.0m" in o.to_text()
-    assert o.to_dict()["altitude_m"] == 500.0
+    assert "alarms=1410" in o.to_text() and "radar_alt=500m agc_alt=520m" in o.to_text()
+    assert o.to_dict()["radar_altitude_m"] == 500.0
 
 
 def test_null_and_scripted_decisions() -> None:
@@ -43,6 +59,7 @@ def test_null_and_scripted_decisions() -> None:
     assert s.decide(_obs(alt=100.0), 5.0).kind == "take_manual"
     assert s.decide(_obs(alt=500.0, program=65), 5.0).kind == "take_manual"
     assert s.decide(_obs(mode="manual", alt=10.0), 5.0).kind == "hold"
+    assert s.decide(_obs(alt=None), 5.0).kind == "hold"  # no radar lock: no altitude trigger
 
 
 def test_executor_takeover_then_command() -> None:

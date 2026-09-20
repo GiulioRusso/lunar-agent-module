@@ -49,6 +49,14 @@ def _decisions(episode: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _altitudes(episode: Path) -> list[list[float | None]]:
+    """[t, radar altitude, AGC altitude] at every decision (None: no radar lock / not displayed)."""
+    return [
+        [r["t"], r["obs"].get("radar_altitude_m"), r["obs"].get("agc_altitude_m")]
+        for r in read_decisions(episode)
+    ]
+
+
 def build(episode: Path, out: Path, hz: float = 10.0) -> None:
     header, ticks = read_episode(episode)
     rows = [_row(t) for t in ticks]
@@ -63,6 +71,7 @@ def build(episode: Path, out: Path, hz: float = 10.0) -> None:
         .replace("__FIELDS__", json.dumps(list(FIELDS) + list(DSKY_FIELDS)))
         .replace("__DATA__", json.dumps(data, separators=(",", ":")))
         .replace("__DEC__", json.dumps(_decisions(episode), separators=(",", ":")))
+        .replace("__ALT__", json.dumps(_altitudes(episode), separators=(",", ":")))
         .replace("__HZ__", str(1.0 / (stride * dt)))
     )
     out.write_text(page)

@@ -720,6 +720,17 @@ Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
       "when to trust the radar" is not a decision; (c) no in-flight faults (engine degradation,
       1201/1202) -- tier 3 is the only scenario where the choice matters; (d) realtime clock mode
       is not driven end to end; (e) the LLM policy itself, prompts and tool schema (Track B).
+      **Radar and the AGC's own altitude are now in the observation (the LR-vs-computer decision).**
+      `plant/radar.py`: radar altitude with bias, noise and (tier 3) a 150-250 m dead band with no
+      lock somewhere in 100-400 m; `Observation.radar_altitude_m` (None when unlocked) and
+      `agc_altitude_m` (Luminary's own altitude read off the DSKY, N63/N64 R3, in feet -- only when
+      those nouns are displayed, never from AGC memory). Seen in a tier-3 episode: the AGC shows
+      258 m while the radar has no lock (t = 772-818 s), and Luminary's altitude runs ~180-380 m
+      above the radar's throughout (the hidden navigation error). `ScriptedAgent` now triggers on
+      *radar* altitude or P65, so it takes over when lock returns (t = 819 s) and lands both tier-3
+      seeds (vz 0.33/0.40). The radar does *not* feed the AGC (yaAGC socket build has no radar
+      path) and the ManualController still flies from true state (crew's eyes) -- simplifications
+      to state in any result. Decision (b) below is therefore partly closed; (a), (c)-(e) remain.
       **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
       yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
       comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,

@@ -36,6 +36,7 @@ from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.propulsion import DescentEngine
+from luminary_agent.plant.radar import Radar
 from luminary_agent.plant.surface import downrange_error_m, horizontal_speed_relative_to_surface
 from luminary_agent.plant.throttle import ThrottleActuator
 from luminary_agent.policies.base import Policy
@@ -115,14 +116,20 @@ def _make_sim(
     )
 
 
+FT_TO_M = 0.3048
+
+
 def observe(
-    sim: Simulation, client: AgcClient, mode: str, t: float, alarms: list[int]
+    sim: Simulation, client: AgcClient, mode: str, t: float, alarms: list[int], radar: Radar
 ) -> Observation:
     d, s = client.dsky, sim.state
     dry = sim.dry_mass_kg if sim.dry_mass_kg is not None else 6_800.0
+    shows_altitude = d.program_number in (63, 64) and d.noun_number in (63, 64) and d.r3 is not None
+    agc_alt = d.r3 * FT_TO_M if shows_altitude and d.r3 is not None else None
     return Observation(
         t, mode, d.program_number, d.verb_number, d.noun_number, d.r1, d.r2, d.r3, tuple(alarms),
-        s.h_m, s.hdot_ms, horizontal_speed_relative_to_surface(s), sim.thrust_n, s.mass_kg,
+        radar.altitude(s.h_m, t), agc_alt, s.hdot_ms, horizontal_speed_relative_to_surface(s),
+        sim.thrust_n, s.mass_kg,
         max(0.0, s.mass_kg - dry),
     )  # fmt: skip
 
@@ -141,6 +148,7 @@ async def _fly(
     on_second: Callable[[Simulation, CoreDump], None] | None,
     checkpoint: tuple[float, Path] | None,
     policy: Policy | None = None,
+    radar: Radar | None = None,
 ) -> DescentResult:
     dsky = SteppedDsky(agc, client, advance=sim.advance_instructions)
     failreg = symbols.ecadr("FAILREG")
@@ -160,7 +168,7 @@ async def _fly(
 
         d = client.dsky
         if policy is not None and t >= next_decision_t:
-            obs = observe(sim, client, executor.mode, t, alarms_seen)
+            obs = observe(sim, client, executor.mode, t, alarms_seen, radar or Radar())
             started = time.perf_counter()
             intent = policy.decide(obs, t)  # the whole simulation is paused while this runs
             latency_s = time.perf_counter() - started
@@ -261,7 +269,7 @@ async def run_descent(
     )
     return await _fly(
         agc, client, symbols, setup, sim, clock, elapsed_s, max_sim_s, None, notes,
-        on_second, checkpoint, policy,
+        on_second, checkpoint, policy, disp.radar,
     )  # fmt: skip
 
 
