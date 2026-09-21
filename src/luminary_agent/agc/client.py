@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 
+from luminary_agent.agc import handshake
 from luminary_agent.agc.actuators import ActuatorState
 from luminary_agent.agc.channels import decode_packet, encode_packet
 from luminary_agent.agc.dsky import KEYCODE, DskyState
@@ -33,12 +34,14 @@ class AgcClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._read_task: asyncio.Task[None] | None = None
+        self.handshake = handshake.register(port)
 
     async def connect(self) -> None:
         self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
         self._read_task = asyncio.create_task(self._read_loop())
 
     async def close(self) -> None:
+        handshake.unregister(self.port)
         if self._read_task is not None:
             self._read_task.cancel()
         if self._writer is not None:
@@ -55,19 +58,27 @@ class AgcClient:
                 channel, value, _u_bit = decode_packet(packet)
             except ValueError:
                 continue
+            if channel == handshake.SYNC_CHANNEL:  # yaAGC's end-of-command marker
+                self.handshake.marker_seen()
+                continue
             self.dsky.apply_channel(channel, value)
             self.actuators.apply_channel(channel, value)
 
+    def _write(self, packet: bytes) -> None:
+        assert self._writer is not None
+        self._writer.write(packet)
+        self.handshake.bytes_sent += len(packet)  # yaAGC waits for these before it steps
+
     async def write_channel(self, channel: int, value: int, u_bit: bool = False) -> None:
         assert self._writer is not None
-        self._writer.write(encode_packet(channel, value, u_bit))
+        self._write(encode_packet(channel, value, u_bit))
         await self._writer.drain()
 
     async def write_channels(self, words: Mapping[int, int]) -> None:
         """Write several channels at once (e.g. Discretes.channel_words())."""
         assert self._writer is not None
         for channel, value in words.items():
-            self._writer.write(encode_packet(channel, value))
+            self._write(encode_packet(channel, value))
         await self._writer.drain()
 
     async def press_key(self, key: str) -> None:
@@ -92,7 +103,7 @@ class AgcClient:
     async def _send_packets(self, packets: list[bytes]) -> None:
         assert self._writer is not None
         for packet in packets:
-            self._writer.write(packet)
+            self._write(packet)
         if packets:
             await self._writer.drain()
 

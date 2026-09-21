@@ -1,79 +1,87 @@
-"""Episode log -> one self-contained HTML replay (side elevation + instrument readouts).
+"""Episode log -> frames for the native window. Playback of the recorded log only: no AGC, no
+physics, no model, no network. The log is read once, streaming; frames are thinned to `hz` of
+simulated time (the recorder keeps every tick; the window does not need 50 a second).
 
-Playback of the recorded log only: no AGC, no physics. Usage:
-    python -m luminary_agent.viz.replay episode.jsonl.gz out.html [--hz 10]
-
-The terrain is cosmetic (a fixed synthetic profile so height above ground is visible); the
-ground the plant actually uses is the altitude-0 line.
+    from luminary_agent.viz.replay import load_episode
+    episode = load_episode(Path("results/runs/t3_s0_scripted.jsonl.gz"))
 """
 
 from __future__ import annotations
 
-import argparse
+import gzip
 import json
+from bisect import bisect_right
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from luminary_agent.plant.gravity import R_MOON
-from luminary_agent.plant.surface import MOON_RATE_RAD_S
-from luminary_agent.sim.recorder import read_decisions, read_episode
-
-FIELDS = ("t", "h_m", "x_m", "z_m", "hdot_ms", "vh_rel", "mass_kg", "thrust_n", "pitch_deg")
-DSKY_FIELDS = ("mode", "prog", "verb", "noun", "r1", "r2", "r3")  # after FIELDS in each row
-
-PAGE = (Path(__file__).parent / "replay.html").read_text()
-
-
-def _row(tick: dict[str, Any]) -> list[Any]:
-    d = tick["dsky"]
-    vh_rel = tick["vt_ms"] - MOON_RATE_RAD_S * (R_MOON + tick["h_m"])
-    values = [tick[k] for k in ("t", "h_m", "x_m", "z_m", "hdot_ms")]
-    values += [vh_rel] + [tick[k] for k in ("mass_kg", "thrust_n", "pitch_deg")]
-    dsky = [d[k] for k in ("prog", "verb", "noun", "r1", "r2", "r3")]
-    return [round(v, 3) for v in values] + [tick.get("mode", "auto")] + dsky
+from luminary_agent.plant.terrain import Surface
+from luminary_agent.scenarios.dispersions import (
+    LOADED_MASS_KG,
+    NOMINAL_DRY_MASS_KG,
+    NOMINAL_PROPELLANT_KG,
+)
+from luminary_agent.viz.view_model import FrameBuilder, ViewFrame
 
 
-def _collapse(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Consecutive repeats of the same intent and outcome collapse to the first."""
-    out: list[dict[str, Any]] = []
-    for r in decisions:
-        key = (r["intent"], r["applied"])
-        if out and out[-1]["key"] == key:
-            continue
-        out.append(
-            {"key": key, "t": r["t"], "kind": r["intent"]["kind"], "params": r["intent"]["params"],
-             "applied": r["applied"], "latency_s": r["latency_s"], "alarms": r["obs"]["alarms"]}
-        )  # fmt: skip
-    return out
+def dry_mass_kg(header: dict[str, Any]) -> float:
+    """Mass at which the propellant is gone, from the header's dispersion (nominal if absent)."""
+    scale = header.get("dispersion", {}).get("propellant_scale")
+    return NOMINAL_DRY_MASS_KG if scale is None else LOADED_MASS_KG - NOMINAL_PROPELLANT_KG * scale
 
 
-def build(episode: Path, out: Path, hz: float = 10.0) -> None:
-    header, ticks = read_episode(episode)
-    rows = [_row(t) for t in ticks]
-    dt = rows[1][0] - rows[0][0]
-    stride = max(1, round(1.0 / (hz * dt)))
-    decisions = read_decisions(episode)
-    # [t, radar altitude, AGC altitude] at every decision (None: no radar lock / not displayed)
-    altitudes = [
-        [r["t"], r["obs"].get("radar_altitude_m"), r["obs"].get("agc_altitude_m")]
-        for r in decisions
-    ]
-    title = " | ".join(f"{k}={header[k]}" for k in ("policy", "tier", "seed") if k in header)
-    page = (
-        PAGE.replace("__TITLE__", title or "episode")
-        .replace("__FIELDS__", json.dumps(list(FIELDS) + list(DSKY_FIELDS)))
-        .replace("__DATA__", json.dumps(rows[::stride], separators=(",", ":")))
-        .replace("__DEC__", json.dumps(_collapse(decisions), separators=(",", ":")))
-        .replace("__ALT__", json.dumps(altitudes, separators=(",", ":")))
-        .replace("__HZ__", str(1.0 / (stride * dt)))
-    )
-    out.write_text(page)
+def title(header: dict[str, Any]) -> str:
+    return " | ".join(f"{k}={header[k]}" for k in ("policy", "tier", "seed") if k in header)
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("episode", type=Path)
-    ap.add_argument("out", type=Path)
-    ap.add_argument("--hz", type=float, default=10.0)
-    a = ap.parse_args()
-    build(a.episode, a.out, a.hz)
+@dataclass
+class Episode:
+    header: dict[str, Any]
+    frames: list[ViewFrame]
+    landing: dict[str, Any] | None = None  # the final verdict record, if the run finished
+    _times: list[float] = field(default_factory=list, repr=False)
+
+    def __post_init__(self) -> None:
+        self._times = [f.t_s for f in self.frames]
+
+    @property
+    def surface(self) -> Surface | None:
+        s = self.header.get("surface")
+        return None if not s else Surface.from_dict(s)
+
+    @property
+    def title(self) -> str:
+        return title(self.header)
+
+    def index_at(self, t_s: float) -> int:
+        """The last frame at or before `t_s` (the first frame if `t_s` precedes them all)."""
+        return max(0, bisect_right(self._times, t_s) - 1)
+
+
+def load_episode(path: Path, hz: float = 10.0) -> Episode:
+    header: dict[str, Any] = {}
+    builder = FrameBuilder(0.0, NOMINAL_DRY_MASS_KG)
+    frames: list[ViewFrame] = []
+    landing: dict[str, Any] | None = None
+    last_t, last_tick = float("-inf"), None
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            r = json.loads(line)
+            kind = r.get("type")
+            if kind == "header":
+                header = r
+                builder = FrameBuilder(header.get("site_x_m", 0.0), dry_mass_kg(header))
+            elif kind == "decision":
+                builder.decision(r)
+            elif kind == "tick":
+                last_tick = r
+                if r["t"] - last_t >= 1.0 / hz:
+                    frames.append(builder.tick(r))
+                    last_t = r["t"]
+            elif kind == "landing":
+                landing = r
+    if not header:
+        raise ValueError(f"{path} has no header line")
+    if last_tick is not None and (not frames or frames[-1].t_s != last_tick["t"]):
+        frames.append(builder.tick(last_tick))  # always end on the final tick
+    return Episode(header, frames, landing)

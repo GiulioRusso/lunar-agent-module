@@ -29,3 +29,9 @@ results/tables/*
 !results/tables/.gitkeep
 
 .DS_Store
+
+# AGC build cache: patched VirtualAGC worktree, yaAGC build, pre-ignition snapshots
+results/cache/
+
+# episode logs written by `luminary fly` (regenerate; not source)
+results/runs/

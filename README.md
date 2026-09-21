@@ -9,25 +9,37 @@ the flight-context taxonomy the scenario generator is built from.
 
 ## Status
 
-Track A works end to end: the original Luminary 099 rope flies a simulated LM from powered-descent
-initiation to a soft landing (P63 -> P64 -> P65), closed through the emulator's accelerometer,
-gimbal-angle and throttle channels, with seeded dispersions, a scorer, an agent interface (observe,
-decide, take manual control) and an HTML replay. No LLM agent yet (Track B).
+The simulator is complete and documented; the LLM agent is not started (Track B).
+
+The original Luminary 099 rope flies a simulated LM from powered-descent initiation to a soft
+landing (P63 -> P64 -> P65), closed through the emulator's accelerometer, gimbal-angle and throttle
+channels. Around it: seeded dispersions (thrust, mass, propellant, an in-flight engine degradation,
+radar bias and dropout, a hidden navigation error), a seeded lunar surface (target, craters,
+boulders, slope), a scorer that keeps `soft_touchdown` and `mission_success` apart, an agent
+interface (observe, decide, take manual control), a deterministic safety monitor with veto power,
+event-driven decision triggering, provenance in every log, and a native pygame window (live during a
+descent, or a replay of a recorded log). The same seed gives the same flight, bit for bit.
 
 Code walkthrough, glossary and a file-by-file reference: [`README-simulator.md`](README-simulator.md).
 
-## See results
+## Run one
 
 ```sh
-make agc        # once: build the emulator and the Luminary rope
-make demo       # 3 difficulty tiers x 2 seeds, pure Luminary, in parallel (~40 min)
-open results/logs/demo/t1_s0.html     # replay of one descent (1x, pause, scrub, 0.5-20x)
+make agc                       # once: build the emulator (with patches/) and the Luminary rope
+uv run luminary fly            # a full powered descent, live in a native window (pygame)
 ```
 
-Each episode also writes `t{tier}_s{seed}.json` (score: landed/safe, touchdown speeds, site error,
-propellant left) and the full recorded log. One episode alone:
-`uv run python -m luminary_agent.eval.run_set --tiers 2 --seeds 0 --workers 1`.
-`make eval` runs the 15-episode dev set.
+**~43 seconds** for a complete descent: 795 s of simulated flight at 22.8x real time, flown by the
+original rope. `--tier 1|2|3 --seed N --policy null|scripted --no-ui` to vary it; `luminary view
+<log.jsonl.gz>` replays a recorded one offline (no emulator, no browser, no server); `luminary eval --set dev` runs a batch.
+
+The first run builds a cached pre-ignition AGC snapshot (~10 s, once): pad loads, REFSMMAT, state
+vectors and the P63 crew prompts are identical in every episode, so they are done once and resumed
+in 1.4 s (`luminary snapshot --refresh` rebuilds it).
+
+Each episode writes `.json` (score: soft touchdown / mission success, touchdown speeds, target
+error, propellant left, decisions, vetoes, and where the wall clock went) and `.jsonl.gz` (every
+tick; replay it with `luminary view`). `make eval` runs the 15-episode dev set.
 
 ## Setup
 
@@ -41,12 +53,14 @@ make lint
 ## Pure Luminary vs a manual takeover
 
 ```sh
-uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20200 --policy null --out results/logs/null
-uv run python -m luminary_agent.eval.run_set --tiers 3 --seeds 0 1 --workers 2 --port-base 20300 --policy scripted --out results/logs/scripted
+uv run luminary eval --set dev --policy null     --workers 5 --out results/logs/dev/null     --port 52000
+uv run luminary eval --set dev --policy scripted --workers 5 --out results/logs/dev/scripted --port 53000
+uv run python -m luminary_agent.eval.report --compare results/logs/dev
 ```
 
-Tier 3 hides a navigation error from the AGC. Luminary alone crashes (0/2 safe); a crew taking
-manual throttle and reading the radar lands 2/2. Give concurrent batches distinct `--port-base`s.
+The baseline table (15 dev episodes per configuration, safety monitor on and off) and how to read
+it are in [`docs/scenarios.md`](docs/scenarios.md). Give concurrent batches distinct `--port`s
+(each emulator uses ten consecutive ports).
 
 ## Plugging in an agent
 
@@ -55,3 +69,16 @@ is registered in `policies/scripted.py:POLICIES`, and runs with
 `python -m luminary_agent.eval.run_episode TIER SEED PORT WORKDIR --policy NAME --log ep.jsonl.gz`.
 The simulation (plant and AGC) is paused while `decide` runs. See `sim/observation.py` for what it
 sees and `sim/executor.py` for what it can do.
+
+`decide` is called on events, not on a fixed cadence (`sim/events.py`): a program transition, a new
+alarm, radar lock gained or lost, a mode change, the previous intent expiring, or a 5 s heartbeat,
+with a 0.5 s floor. That is what keeps a slow policy affordable -- 20 s of quiet flight costs 4
+decisions, not 40. Return a longer `valid_until_s` to be asked less often.
+
+`safety/monitor.py` runs every tick on the same `Observation` the policy gets and can override it
+(arrestable descent rate, horizontal speed near the ground). Vetoes are counted per episode,
+marked in the replay's decision log, and `--no-safety` turns the monitor off for the ablation.
+A policy cannot disable it.
+
+Anything a policy reports as its configuration in `policy.config` (model, prompt hash, sampling
+settings) is written into the episode header alongside the git SHA and clock mode.

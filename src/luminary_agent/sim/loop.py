@@ -27,7 +27,7 @@ from __future__ import annotations
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.coredump import AGC_CYCLES_PER_SECOND
@@ -42,7 +42,11 @@ from luminary_agent.plant.sensors import Imu
 from luminary_agent.plant.throttle import ThrottleActuator
 from luminary_agent.sim.clock import INITIAL_CYCLES_PER_INSTRUCTION, SimClock, SteppedClock
 from luminary_agent.sim.frames import LunarFrame, dot, mat_vec, theta_rad
+from luminary_agent.sim.meter import Meter
 from luminary_agent.sim.recorder import Recorder
+
+if TYPE_CHECKING:  # a window onto the run, never part of it (viz/live.py)
+    from luminary_agent.viz.live import LiveFeed
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,8 @@ class Simulation:
         t_offset_s: float = 0.0,
         guidance_every_ticks: int = 25,
         dry_mass_kg: float | None = None,
+        meter: Meter | None = None,
+        live: LiveFeed | None = None,
     ) -> None:
         if actuator is not None and read_guidance_sample is None:
             raise ValueError("an actuator needs read_guidance_sample to hear from the AGC")
@@ -100,6 +106,8 @@ class Simulation:
         self.z_m = 0.0  # out-of-plane position (along the orbit normal)
         self.zdot_ms = 0.0
         self.normal_fraction = 0.0  # out-of-plane share of the thrust direction
+        self.meter = meter or Meter()  # wall time per section (sim/meter.py)
+        self.live = live  # optional live viewer; dropping frames must never slow the run
 
     def _apply_direction(self, direction_sm: tuple[float, float, float]) -> None:
         """Point the thrust along the AGC's command (perfect pointing -- see agc/guidance.py).
@@ -138,7 +146,8 @@ class Simulation:
                 self._stamp_seen = None  # a command stamped before ignition is not ours to apply
         due = act.engine_on and self.ticks % self.guidance_every_ticks == 0
         if engine_just_lit or due:
-            sample = await self._read_guidance_sample()
+            with self.meter.section("guidance"):
+                sample = await self._read_guidance_sample()
             if self._stamp_seen is not None and sample.command_stamp != self._stamp_seen:
                 self.actuator.command(sample.thrust_increment_counts)
             self._stamp_seen = sample.command_stamp
@@ -163,30 +172,36 @@ class Simulation:
         # inertially-fixed stable member, so rotate the local (radial, tangential) thrust
         # acceleration into the reference frame at the pre-step angle, then into stable-member
         # axes with REFSMMAT.
-        sf_radial = thrust_n * math.cos(control.pitch_rad) / self.state.mass_kg
-        sf_tangential = -thrust_n * math.sin(control.pitch_rad) / self.state.mass_kg
-        sf_normal = thrust_n * self.normal_fraction / self.state.mass_kg
-        sf_ref = self.frame.specific_force_ref(
-            sf_radial, sf_tangential, theta_rad(self.state), sf_normal
-        )
-        sf_sm = mat_vec(self.refsmmat, sf_ref)
-        r = R_MOON + self.state.h_m
-        z_acc = sf_normal - MU_MOON / r**3 * self.z_m
-        self.z_m += self.zdot_ms * self.dt_s + 0.5 * z_acc * self.dt_s**2
-        self.zdot_ms += z_acc * self.dt_s
-        self.state = step(self.state, control, self.engine, self.dt_s)
+        with self.meter.section("plant"):
+            sf_radial = thrust_n * math.cos(control.pitch_rad) / self.state.mass_kg
+            sf_tangential = -thrust_n * math.sin(control.pitch_rad) / self.state.mass_kg
+            sf_normal = thrust_n * self.normal_fraction / self.state.mass_kg
+            sf_ref = self.frame.specific_force_ref(
+                sf_radial, sf_tangential, theta_rad(self.state), sf_normal
+            )
+            sf_sm = mat_vec(self.refsmmat, sf_ref)
+            r = R_MOON + self.state.h_m
+            z_acc = sf_normal - MU_MOON / r**3 * self.z_m
+            self.z_m += self.zdot_ms * self.dt_s + 0.5 * z_acc * self.dt_s**2
+            self.zdot_ms += z_acc * self.dt_s
+            self.state = step(self.state, control, self.engine, self.dt_s)
+            (px, py, pz), _ = self.imu.sample(sf_sm, 0.0, self.dt_s)
 
-        (px, py, pz), _ = self.imu.sample(sf_sm, 0.0, self.dt_s)
-        await self.client.send_pipa_pulses(self.pipa_axes.x, px)
-        await self.client.send_pipa_pulses(self.pipa_axes.y, py)
-        await self.client.send_pipa_pulses(self.pipa_axes.z, pz)
+        with self.meter.section("pipa"):
+            await self.client.send_pipa_pulses(self.pipa_axes.x, px)
+            await self.client.send_pipa_pulses(self.pipa_axes.y, py)
+            await self.client.send_pipa_pulses(self.pipa_axes.z, pz)
 
-        await self.clock.advance(self.dt_s)
+        with self.meter.section("step"):
+            await self.clock.advance(self.dt_s)
         self.ticks += 1
 
-        record = self._record(thrust_n, (px, py, pz))
-        if self.recorder is not None:
-            self.recorder.tick(record)
+        with self.meter.section("record"):
+            record = self._record(thrust_n, (px, py, pz))
+            if self.recorder is not None:
+                self.recorder.tick(record)
+            if self.live is not None:
+                self.live.publish_tick(record)
         return record
 
     def _record(self, thrust_n: float, pulses: tuple[int, int, int]) -> dict[str, Any]:
@@ -203,6 +218,7 @@ class Simulation:
             "thrust_n": thrust_n,
             "mode": "auto" if self.manual is None else "manual",
             "pitch_deg": math.degrees(self.pitch_rad),
+            "normal_fraction": round(self.normal_fraction, 4),
             "pipa_pulses": list(pulses),
             "dsky": {
                 "prog": dsky.program_number,

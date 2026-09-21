@@ -9,8 +9,14 @@ stepped  -- debugger enabled, stdin/stdout are a pipe. The AGC executes only whe
             the same ~1.6k cycles as no pause). `COREDUMP <file>` snapshots all state at
             the pause boundary.
 
-Stepped mode is paced 1:1 to wall-clock while running (the step loop only executes while
-CycleCount < DesiredCycles): pausing is free, going faster than real time is not on offer.
+Stepped mode was paced 1:1 to wall-clock while running -- the step loop only executed while
+`CycleCount < DesiredCycles`, and `SimSleep()` napped 10 ms whenever the clock tick had not
+advanced. Measured: ~17 ms of fixed cost per `STEP` and a hard ceiling of 1.0x real time
+whatever the step size. `--free-run` (patches/yaagc-free-run.patch, applied to the pinned
+submodule at build time) drops that gate: the AGC then runs as fast as the host allows and the
+*caller* sets the pace with its STEP commands. The AGC's own sense of time is unaffected, because
+TIME1/TIME2 come from counter interrupts the engine generates per cycle, not from the wall clock.
+The flight software is untouched; only the emulator's host-side pacing is.
 """
 
 from __future__ import annotations
@@ -21,13 +27,14 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from luminary_agent.agc.build import VIRTUALAGC, yaagc_path
+from luminary_agent.agc import handshake
+from luminary_agent.agc.build import rope_bin_path, yaagc_path
 from luminary_agent.agc.coredump import CoreDump, parse_core_dump
 
 Mode = Literal["realtime", "stepped"]
 
 PROMPT = b"(agc) "
-DEFAULT_ROPE = VIRTUALAGC / "Luminary099" / "MAIN.agc.bin"
+DEFAULT_ROPE = rope_bin_path()
 
 
 def artifacts_present() -> bool:
@@ -45,8 +52,10 @@ class AgcProcess:
         rope: Path = DEFAULT_ROPE,
         dump_time_s: int = 1,
         resume_from: Path | None = None,
+        free_run: bool = True,
     ) -> None:
         self.resume_from = resume_from
+        self.free_run = free_run
         self.workdir = workdir
         self.mode = mode
         self.port = port
@@ -56,6 +65,8 @@ class AgcProcess:
 
     async def start(self) -> None:
         args = [str(yaagc_path()), f"--port={self.port}", "--quiet"]
+        if self.free_run and self.mode == "stepped":
+            args.append("--free-run")
         if self.resume_from is None:
             args.append("--no-resume")
         if self.mode == "realtime":
@@ -95,9 +106,16 @@ class AgcProcess:
     async def _command(self, text: str, timeout_s: float = 60.0) -> str:
         assert self.mode == "stepped", "debugger commands need stepped mode"
         assert self._proc is not None and self._proc.stdin is not None
+        hs = handshake.lookup(self.port)  # None: no client attached (or an unpatched yaAGC)
+        before = 0 if hs is None else hs.syncs
+        if hs is not None and text.startswith("STEP"):
+            text += f" {hs.bytes_sent}"  # yaAGC waits until this many bytes have arrived
         self._proc.stdin.write((text + "\n").encode())
         await self._proc.stdin.drain()
-        return await self._read_until_prompt(timeout_s)
+        reply = await self._read_until_prompt(timeout_s)
+        if hs is not None:
+            await hs.wait_after(before)  # the end-of-command marker: all its output is read
+        return reply
 
     async def step(self, instructions: int) -> str:
         """Run exactly `instructions` AGC instructions, then pause. Returns the debugger's

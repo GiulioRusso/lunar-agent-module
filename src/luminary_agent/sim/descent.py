@@ -22,11 +22,12 @@ the plant (its effect on the *judgement* of a landing is handled in plant/surfac
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from luminary_agent.agc.client import AgcClient
 from luminary_agent.agc.coredump import CoreDump
@@ -35,23 +36,29 @@ from luminary_agent.agc.registers import REG_PIPAX, REG_PIPAY, REG_PIPAZ
 from luminary_agent.agc.stepped_dsky import SteppedDsky
 from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
+from luminary_agent.plant.gravity import R_MOON
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.plant.radar import Radar
 from luminary_agent.plant.surface import downrange_error_m, horizontal_speed_relative_to_surface
+from luminary_agent.plant.terrain import Surface
 from luminary_agent.plant.throttle import ThrottleActuator
-from luminary_agent.policies.base import Policy
+from luminary_agent.policies.base import Intent, Policy
+from luminary_agent.safety.monitor import SafetyMonitor
 from luminary_agent.scenarios.dispersions import NOMINAL_DRY_MASS_KG, Dispersion
 from luminary_agent.sim.clock import SteppedClock
+from luminary_agent.sim.events import Trigger
 from luminary_agent.sim.executor import Executor
 from luminary_agent.sim.frames import LunarFrame
 from luminary_agent.sim.landing_scenario import DescentScenario, LandingSetup
 from luminary_agent.sim.loop import PipaAxes, Simulation, stepped_guidance_reader
-from luminary_agent.sim.observation import Observation
+from luminary_agent.sim.observation import Observation, surface_view
 from luminary_agent.sim.p63_crew import start_p63
 from luminary_agent.sim.recorder import Recorder
 
+if TYPE_CHECKING:
+    from luminary_agent.viz.live import LiveFeed
+
 ALARM_CHECK_EVERY_TICKS = 50  # once per simulated second
-MIN_DECISION_PERIOD_S = 0.5
 FT_TO_M = 0.3048
 LANDING_PROGRAMS = frozenset({63, 64, 65, 66, 67})
 
@@ -64,7 +71,11 @@ class DescentResult:
     alarms: list[int] = field(default_factory=list)
     ticks: int = 0
     site_angle_rad: float = 0.0
+    lateral_m: float = 0.0  # cross-range position at the end (the target is at 0)
     engine_enabled_at_s: float | None = None
+    decisions: int = 0  # times the policy was consulted (an LLM call each, in Track B)
+    profile: dict[str, Any] = field(default_factory=dict)  # wall time per section (sim/meter.py)
+    vetoes: list[str] = field(default_factory=list)  # safety-monitor overrides, in order
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -101,6 +112,7 @@ def _make_sim(
     recorder: Recorder | None,
     engine: DescentEngine | None = None,
     dry_mass_kg: float | None = None,
+    live: LiveFeed | None = None,
 ) -> Simulation:
     return Simulation(
         client,
@@ -115,11 +127,19 @@ def _make_sim(
         t_offset_s=t_offset_s,
         engine=engine,
         dry_mass_kg=dry_mass_kg,
+        live=live,
     )
 
 
 def observe(
-    sim: Simulation, client: AgcClient, mode: str, t: float, alarms: list[int], radar: Radar
+    sim: Simulation,
+    client: AgcClient,
+    mode: str,
+    t: float,
+    alarms: list[int],
+    radar: Radar,
+    surface: Surface | None = None,
+    site_x_m: float = 0.0,
 ) -> Observation:
     d, s = client.dsky, sim.state
     dry = sim.dry_mass_kg if sim.dry_mass_kg is not None else NOMINAL_DRY_MASS_KG
@@ -130,39 +150,56 @@ def observe(
         t, mode, d.program_number, d.verb_number, d.noun_number, d.r1, d.r2, d.r3, tuple(alarms),
         radar.altitude(s.h_m, t), agc_alt, s.hdot_ms, horizontal_speed_relative_to_surface(s),
         sim.thrust_n, s.mass_kg, max(0.0, s.mass_kg - dry),
+        **surface_view(surface, s.x_m - site_x_m, sim.z_m, s.h_m),
     )  # fmt: skip
+
+
+async def _act(
+    executor: Executor,
+    sim: Simulation,
+    obs: Observation,
+    intent: Intent,
+    notes: list[str],
+    *,
+    reason: str,
+    latency_s: float,
+    veto: bool = False,
+) -> None:
+    """Apply one intent (an agent's or the safety monitor's) and log what happened. `reason` is
+    what asked for the decision (sim/events.py) or what the monitor objected to."""
+    applied = await executor.apply(intent)
+    record = {
+        "t": round(obs.t_s, 3),
+        "obs": obs.to_dict(),
+        "intent": {"kind": intent.kind, "params": intent.params},
+        "applied": applied,
+        "latency_s": round(latency_s, 4),
+        "reason": reason,
+        **({"veto": True} if veto else {}),
+    }
+    if sim.recorder is not None:
+        sim.recorder.event(record)
+    if sim.live is not None:
+        sim.live.publish_decision(record)
+    if intent.kind == "take_manual" and applied.startswith("ok"):
+        who = "safety monitor" if veto else "agent"
+        notes.append(f"manual takeover ({who}) at plant t={obs.t_s:.1f} s, h={sim.state.h_m:.0f} m")
 
 
 async def _consult(
     policy: Policy,
     executor: Executor,
     sim: Simulation,
-    client: AgcClient,
-    t: float,
-    alarms: list[int],
-    radar: Radar,
+    obs: Observation,
+    reason: str,
     notes: list[str],
-) -> float:
-    """One agent decision: observe, decide (the whole simulation is paused meanwhile), apply, log.
-    Returns the plant time of the next decision."""
-    obs = observe(sim, client, executor.mode, t, alarms, radar)
+) -> Intent:
+    """One agent decision: decide (the whole simulation is paused meanwhile), apply, log."""
     started = time.perf_counter()
-    intent = policy.decide(obs, t)
+    intent = policy.decide(obs, obs.t_s)
     latency_s = time.perf_counter() - started
-    applied = await executor.apply(intent)
-    if sim.recorder is not None:
-        sim.recorder.event(
-            {
-                "t": round(t, 3),
-                "obs": obs.to_dict(),
-                "intent": {"kind": intent.kind, "params": intent.params},
-                "applied": applied,
-                "latency_s": round(latency_s, 4),
-            }
-        )
-    if intent.kind == "take_manual" and applied.startswith("ok"):
-        notes.append(f"manual takeover at plant t={t:.1f} s, h={sim.state.h_m:.0f} m")
-    return max(intent.valid_until_s, t + MIN_DECISION_PERIOD_S)
+    await _act(executor, sim, obs, intent, notes, reason=reason, latency_s=latency_s)
+    return intent
 
 
 async def _fly(
@@ -179,7 +216,9 @@ async def _fly(
     on_second: Callable[[Simulation, CoreDump], None] | None,
     checkpoint: tuple[float, Path] | None,
     policy: Policy | None,
-    radar: Radar,
+    disp: Dispersion,
+    monitor: SafetyMonitor | None,
+    surface: Surface | None = None,
 ) -> DescentResult:
     dsky = SteppedDsky(agc, client, advance=sim.advance_instructions)
     failreg = symbols.ecadr("FAILREG")
@@ -189,7 +228,10 @@ async def _fly(
     checkpointed = False
     result: DescentResult | None = None
     executor = Executor(sim, client)
-    next_decision_t = float("-inf")
+    trigger = Trigger()
+    decisions = 0
+    radar = disp.radar
+    faulted = disp.thrust_fault_at_s <= 0.0  # nothing to apply
     if policy is not None:
         policy.reset()
 
@@ -197,10 +239,39 @@ async def _fly(
         await sim.tick()
         t = sim.t_offset_s + clock.sim_time_s
 
-        if policy is not None and t >= next_decision_t:
-            next_decision_t = await _consult(
-                policy, executor, sim, client, t, alarms_seen, radar, notes
+        if not faulted and t >= disp.thrust_fault_at_s:
+            # In-flight engine degradation: the AGC is told nothing and compensates with throttle,
+            # so the only visible symptom is the propellant margin (scenarios/dispersions.py).
+            sim.engine = disp.engine(faulted=True)
+            faulted = True
+            notes.append(
+                f"engine degraded to {disp.thrust_fault_scale:.0%} thrust at plant t={t:.1f} s"
             )
+
+        if policy is not None:
+            obs = observe(
+                sim,
+                client,
+                executor.mode,
+                t,
+                alarms_seen,
+                radar,
+                surface,
+                setup.scenario.theta_site * R_MOON,
+            )
+            # The monitor runs every tick and outranks the policy; the policy is consulted only
+            # when something changed (sim/events.py).
+            veto = monitor.check(obs) if monitor is not None else None
+            if veto is not None:
+                await _act(
+                    executor, sim, obs, veto.intent, notes,
+                    reason=veto.reason, latency_s=0.0, veto=not veto.release,
+                )  # fmt: skip
+                trigger.fired(obs, veto.intent.valid_until_s)
+            elif (reason := trigger.reason(obs)) is not None:
+                intent = await _consult(policy, executor, sim, obs, reason, notes)
+                decisions += 1
+                trigger.fired(obs, intent.valid_until_s)
         d = client.dsky
         if engine_enabled_at is None and d.verb_number == 99 and d.noun_number == 62:
             await dsky.verb(33)  # the crew enables the engine
@@ -216,7 +287,8 @@ async def _fly(
         elif t - t_start_s >= max_sim_s:
             result = DescentResult("time_limit", t, sim.state)
         elif sim.ticks % ALARM_CHECK_EVERY_TICKS == 0:
-            dump = await agc.coredump()
+            with sim.meter.section("alarms"):
+                dump = await agc.coredump()
             if on_second is not None:
                 on_second(sim, dump)
             # Alarms are informational, as in real operations (1201/1202 did not end Apollo 11's
@@ -233,8 +305,12 @@ async def _fly(
                 result = DescentResult("aborted", t, sim.state, notes=[f"MODREG={mode}"])
 
     result.ticks = sim.ticks
+    result.profile = sim.meter.report(sim_s=max(0.0, t - t_start_s))
+    result.decisions = decisions
+    result.vetoes = [f"t={v.t_s:.1f}s {v.reason}" for v in (monitor.vetoes if monitor else [])]
     result.alarms = alarms_seen
     result.site_angle_rad = setup.scenario.theta_site
+    result.lateral_m = sim.z_m
     result.engine_enabled_at_s = engine_enabled_at
     result.notes = notes + result.notes
     return result
@@ -251,16 +327,25 @@ async def run_descent(
     checkpoint: tuple[float, Path] | None = None,
     dispersion: Dispersion | None = None,
     policy: Policy | None = None,
+    monitor: SafetyMonitor | None = None,
+    burn_attitude: tuple[int, int, int] | None = None,
+    live: LiveFeed | None = None,
+    surface: Surface | None = None,
 ) -> DescentResult:
     """`policy` is called on a cadence with an Observation and returns an Intent (sim/executor.py);
     the simulation is paused while it decides. `dispersion` makes the plant differ from what the
     AGC was told (scenarios/dispersions.py). `on_second`, if given, is called once per simulated
     second with the plant and a fresh core dump (compare the AGC's belief with the truth).
     `checkpoint` = (plant time in s since the epoch, path) saves a resumable checkpoint then.
+    `burn_attitude`, when given, means the AGC is already past the P63 crew prompts (it was
+    resumed from a snapshot) and those gimbal counts are what the CDUs were seeded to.
     """
     epoch_s = setup.now_cs / 100.0
-    burn_attitude = await start_p63(agc, client, symbols)
-    notes = [f"CDUs seeded at burn attitude {burn_attitude} (no attitude dynamics)"]
+    if burn_attitude is None:  # the slow path: run the crew prompts now
+        burn_attitude = await start_p63(agc, client, symbols)
+        notes = [f"CDUs seeded at burn attitude {burn_attitude} (no attitude dynamics)"]
+    else:  # resumed from the pre-ignition snapshot (sim/snapshot.py), which already did
+        notes = [f"pre-ignition snapshot; CDUs seeded at burn attitude {burn_attitude}"]
 
     # The plant coasted while only the crew was talking to the AGC: catch it up.
     dump = await agc.coredump()
@@ -281,10 +366,11 @@ async def run_descent(
         recorder,
         disp.engine(),
         disp.dry_mass_kg,
+        live,
     )
     return await _fly(
         agc, client, symbols, setup, sim, clock, elapsed_s, max_sim_s, None, notes,
-        on_second, checkpoint, policy, disp.radar,
+        on_second, checkpoint, policy, disp, monitor, surface,
     )  # fmt: skip
 
 
@@ -361,12 +447,13 @@ async def resume_descent(
     notes = [f"resumed from {checkpoint_path.name} at plant t={saved['t_plant_s']:.1f} s"]
     return await _fly(
         agc, client, symbols, setup, sim, clock, saved["t_plant_s"], max_sim_s,
-        saved["engine_enabled_at"], notes, on_second, None, None, Radar(),
+        saved["engine_enabled_at"], notes, on_second, None, None, disp, None,
     )  # fmt: skip
 
 
-def summarize(result: DescentResult) -> dict[str, Any]:
+def summarize(result: DescentResult, dry_mass_kg: float = NOMINAL_DRY_MASS_KG) -> dict[str, Any]:
     s = result.state
+    fuel_kg = max(0.0, s.mass_kg - dry_mass_kg)
     return {
         "outcome": result.outcome,
         "t_s": round(result.t_s, 1),
@@ -375,8 +462,16 @@ def summarize(result: DescentResult) -> dict[str, Any]:
         "vt_inertial_ms": round(s.xdot_ms, 2),
         "horizontal_relative_to_surface_ms": round(result.horizontal_relative_ms, 2),
         "downrange_error_m": round(result.downrange_error_m, 0),
+        "lateral_m": round(result.lateral_m, 0),
+        "target_error_m": round(math.hypot(result.downrange_error_m, result.lateral_m), 0),
+        "fuel_kg": round(fuel_kg, 1),
         "mass_kg": round(s.mass_kg, 1),
         "alarms": [oct(a) for a in result.alarms],
+        "decisions": result.decisions,
+        "vetoes": result.vetoes,
+        "safety_veto_count": len(result.vetoes),
+        "fallback_count": 0,
+        "profile": result.profile,
         "engine_enabled_at_s": result.engine_enabled_at_s,
         "notes": result.notes,
     }

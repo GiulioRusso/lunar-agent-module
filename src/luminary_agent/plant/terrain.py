@@ -1,0 +1,180 @@
+"""Seeded landing-site surface: target, hazards and slope, as data the scorer reads.
+
+The plant's contact is still a flat plane at altitude 0 (3-DoF; no terrain-following physics), so
+this surface does not change *how* the vehicle lands. It decides whether the place it landed is
+acceptable: `assess()` is the single judgement `mission_success` is built on, and its inputs are
+logged so any touchdown can be explained (target error, which hazard, what slope).
+
+Frame: origin = the target, x = down-range (same sign as `downrange_error_m`), z = cross-range,
+metres. Relief is a sum of smooth Gaussian bumps (so slope is well defined everywhere); hazards are
+discs (craters and boulders) that a footpad must stay clear of. The area around the target is kept
+clear and flat so a good landing at the target is always a success.
+
+Limits are engineering judgement, not scenario tuning: LM gear span ~9.0 m (footpad radius 4.5 m
+from the centre), a landing slope above ~12 degrees risks tipping (docs/lem-model-sources.md).
+Every number here is a knob of the synthetic surface, not a measurement of a real site.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from dataclasses import dataclass
+from typing import Any, Literal
+
+import numpy as np
+from numpy.typing import NDArray
+
+TARGET_RADIUS_M = 100.0  # mission_success: landing within this of the target
+MAX_SLOPE_DEG = 12.0  # steeper than this over the footprint: not an acceptable landing
+FOOTPRINT_RADIUS_M = 4.5  # half the LM gear span (~9.0 m); slope is measured over this baseline
+CLEAR_RADIUS_M = 30.0  # no hazard and no relief inside this radius around the target
+EXTENT_M = 2_500.0  # hazards/relief are generated inside +-EXTENT_M of the target
+
+
+@dataclass(frozen=True)
+class Hazard:
+    kind: Literal["crater", "boulder"]
+    x_m: float
+    z_m: float
+    radius_m: float
+
+
+@dataclass(frozen=True)
+class Bump:
+    x_m: float
+    z_m: float
+    height_m: float
+    sigma_m: float
+
+
+@dataclass(frozen=True)
+class Assessment:
+    """Why a touchdown is (not) an acceptable landing. Everything `mission_success` needs."""
+
+    x_m: float  # touchdown, target frame
+    z_m: float
+    target_error_m: float
+    slope_deg: float
+    hazard: Hazard | None  # nearest hazard the footprint overlaps, if any
+    hazard_free: bool
+    slope_ok: bool
+    target_ok: bool
+
+    def as_dict(self) -> dict[str, object]:
+        d = dict(self.__dict__)
+        d["hazard"] = None if self.hazard is None else dict(self.hazard.__dict__)
+        return d
+
+
+@dataclass(frozen=True)
+class Surface:
+    seed: int
+    hazards: tuple[Hazard, ...] = ()
+    bumps: tuple[Bump, ...] = ()
+
+    @classmethod
+    def sample(cls, seed: int, craters: int = 150, boulders: int = 500, bumps: int = 30) -> Surface:
+        rng = random.Random(f"surface:{seed}")
+
+        def outside_target(x: float, z: float, r: float) -> bool:
+            return math.hypot(x, z) > CLEAR_RADIUS_M + r
+
+        hazards: list[Hazard] = []
+        for kind, n, lo, hi in (("crater", craters, 5.0, 60.0), ("boulder", boulders, 1.0, 4.0)):
+            while sum(1 for h in hazards if h.kind == kind) < n:
+                x, z, r = (rng.uniform(-EXTENT_M, EXTENT_M), rng.uniform(-EXTENT_M, EXTENT_M),
+                           rng.uniform(lo, hi))  # fmt: skip
+                if outside_target(x, z, r):
+                    hazards.append(Hazard(kind, round(x, 1), round(z, 1), round(r, 1)))  # type: ignore[arg-type]
+        relief: list[Bump] = []
+        while len(relief) < bumps:
+            x, z = rng.uniform(-EXTENT_M, EXTENT_M), rng.uniform(-EXTENT_M, EXTENT_M)
+            sigma, height = rng.uniform(30.0, 250.0), rng.uniform(5.0, 60.0)
+            if outside_target(x, z, 3.0 * sigma):  # the target stays flat
+                relief.append(Bump(round(x, 1), round(z, 1), round(height, 1), round(sigma, 1)))
+        return cls(seed, tuple(hazards), tuple(relief))
+
+    def height_m(self, x: float, z: float) -> float:
+        return sum(
+            b.height_m * math.exp(-((x - b.x_m) ** 2 + (z - b.z_m) ** 2) / (2.0 * b.sigma_m**2))
+            for b in self.bumps
+        )
+
+    def slope_deg(self, x: float, z: float, baseline_m: float = FOOTPRINT_RADIUS_M) -> float:
+        """Steepest slope over the footprint: central differences over +-baseline."""
+        h, b = self.height_m, baseline_m
+        gx = (h(x + b, z) - h(x - b, z)) / (2 * b)
+        gz = (h(x, z + b) - h(x, z - b)) / (2 * b)
+        return math.degrees(math.atan(math.hypot(gx, gz)))
+
+    def hazard_at(
+        self, x: float, z: float, clearance_m: float = FOOTPRINT_RADIUS_M
+    ) -> Hazard | None:
+        """The hazard whose disc (grown by the footprint) contains the point, deepest first."""
+
+        def depth(h: Hazard) -> float:
+            return h.radius_m + clearance_m - math.hypot(x - h.x_m, z - h.z_m)
+
+        return max((h for h in self.hazards if depth(h) >= 0.0), key=depth, default=None)
+
+    def assess(self, x_m: float, z_m: float) -> Assessment:
+        error = math.hypot(x_m, z_m)
+        slope = self.slope_deg(x_m, z_m)
+        hazard = self.hazard_at(x_m, z_m)
+        return Assessment(
+            x_m, z_m, error, slope, hazard,
+            hazard_free=hazard is None,
+            slope_ok=slope <= MAX_SLOPE_DEG,
+            target_ok=error <= TARGET_RADIUS_M,
+        )  # fmt: skip
+
+    def grid(self, half_m: float, step_m: float) -> list[list[tuple[float, float]]]:
+        """Rows of (height_m, slope_deg) on a square grid centred on the target, z outer, x inner.
+
+        The data a renderer needs for the ground grid; hazards and the target are drawn on top.
+        """
+        n = int(2 * half_m / step_m) + 1
+        return [
+            [
+                (self.height_m(-half_m + i * step_m, -half_m + j * step_m),
+                 self.slope_deg(-half_m + i * step_m, -half_m + j * step_m))
+                for i in range(n)
+            ]
+            for j in range(n)
+        ]  # fmt: skip
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Surface:
+        """Rebuild a surface from `as_dict()` (what the episode log header carries)."""
+        return cls(
+            int(d["seed"]),
+            tuple(Hazard(**h) for h in d["hazards"]),
+            tuple(Bump(**b) for b in d["bumps"]),
+        )
+
+    def slope_map(self, half_m: float, step_m: float) -> NDArray[np.float64]:
+        """Slope in degrees on a square grid centred on the target (z rows, x columns), the
+        vectorised twin of `slope_deg` -- the ground tint the renderer draws."""
+        axis = np.arange(-half_m, half_m + step_m / 2, step_m)
+        xx, zz = np.meshgrid(axis, axis)
+        b = FOOTPRINT_RADIUS_M
+
+        def height(x: NDArray[np.float64], z: NDArray[np.float64]) -> NDArray[np.float64]:
+            out = np.zeros_like(x)
+            for k in self.bumps:
+                out += k.height_m * np.exp(
+                    -((x - k.x_m) ** 2 + (z - k.z_m) ** 2) / (2 * k.sigma_m**2)
+                )
+            return out
+
+        gx = (height(xx + b, zz) - height(xx - b, zz)) / (2 * b)
+        gz = (height(xx, zz + b) - height(xx, zz - b)) / (2 * b)
+        return np.degrees(np.arctan(np.hypot(gx, gz)))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "seed": self.seed,
+            "hazards": [dict(h.__dict__) for h in self.hazards],
+            "bumps": [dict(b.__dict__) for b in self.bumps],
+        }

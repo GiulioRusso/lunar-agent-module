@@ -1,924 +1,647 @@
-# LUMINARY-AGENT — Build Plan (v3)
+# LUMINARY-AGENT — Piano di esecuzione v5 (simulatore prima, agente dopo)
 
-An LLM agent that flies the Apollo Lunar Module to the surface, closing the loop around the
-**original 1969 AGC flight software** running in emulation. Fully local, no APIs, no paid services.
+## 0. Decisione di prodotto
 
-Target platform: MacBook Air M5, 16 GB, no discrete GPU.
+Il progetto viene realizzato in questo ordine non negoziabile:
 
-**v2 changes:** split into Track A (build now, no agentic knowledge required) and Track B (the
-agent, after the course); added the flight-context taxonomy (§2); demoted the agent from "the
-project" to "one client of the environment".
+1. completare e verificare il **simulatore desktop**;
+2. produrre un `README-simulator.md` didattico che spiega il codice senza presupporre conoscenze;
+3. inserire l'agente locale come una policy sostituibile del simulatore già finito;
+4. solo allora ampliare gli scenari e fare benchmark/ablazioni.
 
-**v3 changes:** the simulation is **pausable** — plant *and* AGC — so the agent actually flies the
-vehicle instead of racing it (§3.1); realtime stays as a second mode and the gap between them
-becomes a headline result rather than a lost claim (§0.3, Phase 6). Added record/replay of episodes
-at true speed (§3.2), and promoted "see where the LM is and where the ground is" to Phase 1b via a
-cheap 2D terrain profile, with a stated visual style (§3.3). Full 3D remains Phase 5.
+Il primo deliverable non è quindi un LLM che commenta una discesa, ma un simulatore che si può
+lanciare e osservare con un comando: Luminary 099 esegue nel vero emulatore yaAGC, il LEM è
+modellato da una pianta locale, e una finestra nativa mostra chiaramente che cosa sta avvenendo.
 
----
-
-## 0. Honest framing before you start
-
-Five things must be true or the project fails.
-
-1. **The hard part is not the agent. It is closing the loop around yaAGC.**
-   Virtual AGC states explicitly that it is not a lunar-lander simulator and not a behavioural
-   simulation of the LM — it is a CPU emulator plus peripherals, intended as a *component* of such
-   a simulation. Nobody hands you a physics plant. You write it. Luminary expects PIPA
-   accelerometer pulse increments, CDU gimbal angles and landing-radar words; it emits jet
-   commands and a throttle DAC value. Budget **50–60% of total project time here**.
-
-2. **The agent is ~2 weeks of a 12-week project.** Everything else — emulator, plant, sensors,
-   scenarios, eval harness, visualisation — is ordinary engineering that needs zero agentic
-   knowledge. This is why you can start today and let the course run in parallel.
-
-3. **An LLM cannot be in the inner control loop.** The LM digital autopilot runs at tens of Hz.
-   A local 8B model on an M-series Air gives roughly 0.5–3 s per structured decision. So the
-   architecture is necessarily **hierarchical**: the LLM is the flight director / crew, issuing
-   mode changes, target redesignations, abort decisions and DSKY entries at 0.2–1 Hz or on events;
-   deterministic code holds the fast loop. Any plan where the LLM outputs thrust at 20 Hz fails.
-
-   **Amended (v3): the wall-clock half of this is a choice, not a law.** The whole simulation —
-   plant *and* AGC — can be paused while the agent thinks, and resumed with no time skip (§3.1).
-   That removes the latency penalty entirely and lets the agent genuinely fly the vehicle instead
-   of watching it fall past. What does *not* change is the authority split: the AGC's DAP really
-   does run at tens of Hz and decisions cannot be injected mid-tick, so the hierarchy survives —
-   its justification just moves from "the model is too slow" to "the computer owns the fast loop".
-   Run both modes and report the difference (§3.1, Phase 6); the gap between them *is* the
-   measurement of what real-time pressure costs an 8B model.
-
-4. **Original code + local physics is the whole novelty.** Reimplementing Klumpp's guidance in
-   Python and calling it "Apollo" is a toy. Running the Luminary 099 core rope and having an agent
-   negotiate with it through the actual I/O channels is not. Protect that property.
-
-5. **Have a declared fallback.** If the AGC loop has not closed by its gate date, you drop to a
-   Python reimplementation of the P63/P64/P66 guidance law and keep everything else intact.
-   Decide this in advance, in writing.
+Target: MacBook Air M5, 16 GB. Tutto gira localmente: niente API cloud, chiavi, servizi a pagamento
+o browser. Un eventuale backend Ollama è ammesso soltanto come processo locale via loopback e con
+modello già installato; se “nessuna API” include anche loopback, si usa un backend in-process
+`llama.cpp` mantenendo la medesima interfaccia Policy.
 
 ---
 
-## 1. Track A / Track B — what to build now
+## 1. Definizione tecnica onesta
 
-**Reframe the deliverable.** The primary artifact is not the agent. It is a *lunar descent
-benchmark environment* with the real AGC in the loop, plus a set of baseline policies and an
-evaluation harness. The LLM agent is one policy among several that plug into it.
+### 1.1 “Vero AGC”
 
-This reframing does three things: it lets you build for 8–10 weeks without knowing any agentic
-AI; it means the project is a portfolio piece even if the agent underperforms (a hard,
-historically grounded, fully local RL/agent benchmark is itself worth showing); and it forces the
-clean interfaces that make the agent easy to drop in later.
+- Il rope **Luminary 099 originale** viene assemblato ed eseguito da `yaAGC`.
+- I/O, DSKY e uplink passano dai meccanismi AGC: socket channel e programma P27; non si pilota il
+  LEM scrivendo direttamente la memoria dell'AGC.
+- VirtualAGC non include una fisica del LEM: pianta, sensori, radar, terreno e visualizzazione sono
+  codice del progetto.
+- Il modo stepped veloce usa una patch host-side riproducibile di yaAGC (`--free-run`) che modifica
+  il pacing dell'emulatore, **non** Luminary. Non dire “emulatore non modificato”; dire invece:
+  **“Luminary originale su yaAGC con patch di pacing host-side, documentata e hashata.”**
 
-### Track A — start immediately, no agentic knowledge required
+Per ogni episodio bisogna salvare: commit VirtualAGC, SHA-256 delle patch applicate, SHA-256 di
+yaAGC, rope `.bin` e listing, commit del progetto e stato dirty. La soluzione preferita è costruire
+la versione patchata in un worktree/cache di build, lasciando il submodule pinning immutato.
 
-| Order | Work | Why now |
+### 1.2 Modello LEM fedele, originale e non generico
+
+Il LEM visualizzato deve essere una mesh **progettata nel repository**, non un asset 3D scaricato o
+una navicella generica mascherata da LEM. Deve essere visivamente e dimensionalmente riconoscibile
+come Apollo Lunar Module:
+
+- due stadi distinti (descent e ascent stage), struttura ottagonale/asimmetrica, quattro landing
+  gear, disco/ugello del DPS, RCS/quadranti e antenna nella silhouette;
+- proporzioni e posizioni derivate da fonti tecniche pubbliche, annotate in
+  `docs/lem-model-sources.md` con figura/pagina e licenza;
+- mesh low-poly/procedurale originale (`lem_mesh.py` oppure asset generato dal repo), con parametri
+  numerici, senza importare o ricalcare una mesh esistente;
+- per l'MVP è richiesto un modello wireframe/flat shaded accurato nella silhouette, non una resa
+  fotorealistica. Texture, decal e materiali storici sono fuori scope;
+- stadio e parti devono rispecchiare la configurazione simulata. Se la pianta non ha ancora
+  6-DoF, la rotazione visiva rappresenta il pitch/comando disponibile e non deve essere presentata
+  come assetto dinamico completo.
+
+Il requisito “uguale all'originale” significa fedeltà a geometria e proporzioni documentate, non
+la copia di un asset protetto o di una mesh altrui.
+
+### 1.3 Azioni disponibili oggi
+
+La seam già presente permette a una policy di:
+
+1. mantenere l'automatico (`hold`);
+2. prendere il controllo manuale (`take_manual`);
+3. impostare rateo verticale e velocità orizzontale desiderati al controllore deterministico
+   (`set_manual_target`).
+
+Non sono ancora implementabili in modo onesto: abort con ascent stage, LPD/redesignation,
+P64→P66 via MARKRUPT, accettazione radar dentro Luminary e gestione di 1201/1202 realmente
+indotti. L'MVP dell'agente va descritto come **equipaggio virtuale che decide il takeover e guida
+l'atterraggio in presenza di incertezza osservabile**, non come copertura completa delle procedure
+Apollo.
+
+### 1.4 Giudizi di atterraggio
+
+Tenere separati:
+
+| Esito | Criterio |
+|---|---|
+| `soft_touchdown` | contatto, velocità verticale ≤ 3.0 m/s, orizzontale ≤ 1.2 m/s, propellente > 0 |
+| `mission_success` | `soft_touchdown` + errore target ≤ 100 m + area senza hazard + pendenza ammessa |
+
+Finché superficie, hazard e slope non sono nella pianta, `mission_success` è `not_scored`; non è
+lecito chiamare “safe” un contatto morbido a centinaia di metri dal sito.
+
+Il log esistente `t3_s0_scripted` prova un soft touchdown (0.71 m/s verticale e 0.59 m/s
+orizzontale), non mission success: è a ~802 m dal target e registra sette safety veto.
+
+---
+
+## 2. Stato iniziale reale del repository
+
+| Componente | Stato | Nota |
 |---|---|---|
-| A1 | Emulator: build `yaYUL` + `yaAGC`, assemble Luminary 099, Python channel client, programmatic DSKY | Highest technical risk in the project. Fail here early, not in week 8. |
-| A2 | Plant: 3-DoF → 6-DoF dynamics, DPS/RCS, IMU (PIPA/CDU), landing radar | The other half of the risk. Nothing downstream exists without it. |
-| A3 | Debug viewer: Rerun time-series + 2D trajectory | This is a *debugging tool*, not decoration. You cannot distinguish an integrator bug from an IMU sign error from a wrong channel bit without it. (Defer the polished 3D/DSKY replay — that one *is* decoration until the physics works.) |
-| A4 | Domain research: the flight-context taxonomy (§2) | Answers "what could change". Feeds A5 directly. Reuse the Apollo/NTRS RAG work rather than starting a new corpus — extracting a structured failure taxonomy is a better use of it than free-form Q&A, and the taxonomy becomes a repo document. |
-| A5 | Scenario generator + frozen eval set | Defines the problem the agent solves. Must exist before the agent. |
-| A6 | Baselines: null (pure Luminary), scripted Apollo 11 timeline, PID/MPC on the ROD channel | Gives you something to beat and a fallback policy for graceful degradation. |
-| A7 | Eval harness: metrics, parallel runner, report generation | Same reason. Also the thing that turns a demo into a result. |
-| A8 | **Define the `Agent` protocol and the tool schemas now, as stubs** | So course material plugs into a fixed interface instead of reshaping the codebase. |
+| yaYUL, yaAGC, Luminary 099 | presente | build e rope sono già automatizzati |
+| Bridge AGC | presente | channel socket, DSKY, P27, core dump, PIPA/CDU, discreti |
+| Pianta | presente, non 6-DoF | dinamica lunare, DPS, mass flow, IMU, radar, throttle |
+| Setup P63 e loop | presente | esiste un soft touchdown registrato con Luminary nel loop |
+| Clock, snapshot e recorder | presenti | JSONL gzip, replay e snapshot pre-ignition |
+| Velocità | presente | run scripted registrato a ~22.8× real-time |
+| Viewer | da sostituire | l'attuale HTML/SSE/Three.js apre un browser e non rispetta il target |
+| Policy | null e scripted presenti | seam `Policy → Intent → Executor` pronta |
+| LLM | assente | da inserire soltanto dopo il simulatore finito e documentato |
+| Metriche | incomplete | il punteggio attuale non impone distanza dal target/hazard/slope |
 
-### Track B — after/alongside the course
-
-Phase 4 only: planner/executor split, tool calling, blackboard summariser, safety monitor with
-veto, memory, reflection, self-consistency, then the ablations. See §5.
-
-**What to bring back from the course each week:** write down one pattern you learned and one line
-on whether it applies here. Most will not — most agentic tooling targets long-horizon text tasks,
-not a latency-constrained control loop with a veto layer. Being able to say *why* a pattern does
-not apply is worth as much as implementing the ones that do.
+Non ricostruire AGC bridge, P63, clock, recorder o pianta da zero. Lavorare per completamento e
+correzione delle parti mancanti.
 
 ---
 
-## 2. What "different flight contexts" actually means
+## 3. Architettura definitiva del simulatore
 
-This is the axis you said you could not enumerate. Here it is, grounded in what genuinely varied
-across Apollo 11–17. It becomes the spec for the scenario generator (A5) and it defines the
-agent's decision space.
-
-### 2.1 Initial-condition dispersions
-State vector error at PDI (position, velocity), out-of-plane error, altitude uncertainty,
-ignition-time offset, vehicle mass and centre-of-gravity uncertainty.
-
-### 2.2 Propulsion and vehicle
-Descent engine thrust degradation, throttle response lag, Isp variation, RCS jet stuck-on or
-failed-off, CG offset requiring gimbal trim, propellant slosh, and the one that decides missions:
-**fuel margin** — Apollo 11 touched down with roughly 25 s of usable propellant remaining.
-
-### 2.3 Navigation and sensors
-Landing-radar late lock-on or dropout (a real recurring problem), a large LR-vs-computer altitude
-discrepancy that must be accepted or rejected by the crew, IMU bias and drift, gimbal-lock
-proximity, a stale state vector needing an uplinked update.
-
-### 2.4 Guidance computer
-Executive-overflow program alarms — 1201/1202 on Apollo 11, caused by the rendezvous radar
-stealing computer cycles. This is *the* canonical agent decision: the computer is reporting it is
-overloaded, the display is dropping out, and someone has to call go or abort within seconds. It is
-reproducible in Luminary, and it should be a first-class scenario.
-
-### 2.5 Terrain and landing site
-Boulder field or crater at the designated point, forcing redesignation (Apollo 11: manual takeover
-into P66 and a fly-over to a clear area); surface slope; dust obscuration below ~30 m, severe on
-Apollo 12 and 15; mascon gravity anomalies producing downrange error — Apollo 11 landed several km
-long partly because of this. Site type varies enormously: mare flats (11), pinpoint target next to
-an existing spacecraft (12, Surveyor 3), mountainous rille (15), highlands (16).
-
-### 2.6 Mission phase and mode
-P63 braking → P64 approach with landing-point designator redesignation → P66 rate-of-descent
-manual → P67. Plus abort modes. "Different context" is often just "different program active with
-different authority split between computer and crew".
-
-### 2.7 Vehicle configuration
-J-mission LMs (15–17) were heavier, carried the rover, used a steeper descent and targeted harder
-sites. Same software family, materially different flight problem.
-
-### 2.8 Communications and external authority
-Loss of signal, delayed Mission Control go/no-go calls, uplink unavailable. Determines whether the
-agent may defer a decision or must own it.
-
-### 2.9 The resulting agent decision space
-Go/no-go on program alarms · accept or reject a landing-radar update · redesignate the landing
-site (LPD angle) · switch program (P64→P66) · commit to a descent rate · abort vs abort-stage ·
-explicitly hold. Notice that these are all **discrete, low-rate, high-consequence** decisions —
-exactly the class an LLM can plausibly handle and a PID cannot. That is the thesis of the project;
-make the scenario set test it.
-
-**Sources to mine (all free, all on NTRS or the Apollo Flight Journal):** Apollo 11 Mission Report
-and its LM descent postflight analysis, the Apollo Lunar Descent Guidance technical literature
-(Klumpp), the Apollo Flight Journal descent transcripts and commentary, and the Luminary source
-comments themselves — the rope is annotated.
-
----
-
-## 3. System architecture
-
-```
-┌────────────────────────────────────────────────────────────────────┐
-│  SCENARIO GENERATOR (seeded, YAML) — taxonomy §2                   │
-└──────────────────────────────┬─────────────────────────────────────┘
-                               │
-┌──────────────────────────────▼─────────────────────────────────────┐
-│  PLANT  (Python, 50 Hz fixed step)                                 │
-│  6-DoF rigid body · lunar gravity · DPS thrust & mass flow         │
-│  RCS jets · IMU model (PIPA pulses, CDU angles) · landing radar    │
-└───────▲──────────────────────────────────────────┬─────────────────┘
-        │ channel writes (jets, throttle DAC)      │ channel reads
-┌───────┴──────────────────────────────────────────▼─────────────────┐
-│  AGC BRIDGE (one asyncio TCP socket + debugger pipe on stdin/out)  │
-└───────▲──────────────────────────────────────────┬─────────────────┘
-        │                                          │
-┌───────┴────────────┐              ┌──────────────▼─────────────────┐
-│  yaAGC + Luminary  │              │  BLACKBOARD (flight state)     │
-│  099 (unmodified)  │              │  h, ḣ, v, fuel, prog, alarms   │
-└────────────────────┘              └──────────────┬─────────────────┘
-                                                   │
-                    ┌──────────────────────────────▼─────────────────┐
-                    │  SAFETY MONITOR (deterministic, has veto)      │
-                    └──────────────┬────────────────────────────────┘
-                                   │
-                    ┌──────────────▼────────────────────────────────┐
-                    │  POLICY  ← null | scripted | PID | LLM agent  │
-                    │  one fixed interface, swappable by config     │
-                    └──────────────┬────────────────────────────────┘
-                                   │ "thinking" → hold the clock
-                    ┌──────────────▼────────────────────────────────┐
-                    │  CLOCK  realtime | stepped | replay   (§3.1)  │
-                    │  owns advance/pause of BOTH plant and AGC     │
-                    └──────────────┬────────────────────────────────┘
-                                   │
-                    ┌──────────────▼────────────────────────────────┐
-                    │  RECORDER → episode.jsonl + core snapshots    │
-                    │  every tick, self-describing        (§3.2)    │
-                    └──────────────┬────────────────────────────────┘
-                                   │
-                    ┌──────────────▼────────────────────────────────┐
-                    │  RERUN VIEWER — profile, terrain, DSKY, trace │
-                    │  live, or replaying a log at 1×     (§3.3)    │
-                    └───────────────────────────────────────────────┘
+```text
+scenario seed + dispersioni + superficie sintetica
+                 │
+                 ▼
+ pianta LEM ◄── sensori (PIPA/CDU, radar, discreti) ──┐
+     ▲                                                │
+     │ DPS/RCS                                        ▼
+     └──────── yaAGC + Luminary 099 ◄──────── AGC bridge
+                                                    │
+          ┌─────────────────────────────────────────┴─────────────┐
+          ▼                                                       ▼
+  observation per policy                                 recorder JSONL
+          │                                                       │
+  scheduler + executor + safety                              ViewFrame
+          │                                                       │
+ policy null/scripted/manual (LLM solo dopo)              coda latest-wins
+                                                                  │
+                                                                  ▼
+                                                   finestra desktop nativa
+                                                   live o replay offline
 ```
 
-Ports: **one connection is enough.** yaAGC opens `MAX_CLIENTS` (10) *identical* listening sockets
-at `--port` … `--port+9` (`SocketAPI.c:ChannelRoutineGeneric`); every one broadcasts all channel
-writes and accepts all channel writes, so "DSKY port / IMU port / ACA port" is a naming convention
-of the separate GUI peripherals, not something the protocol distinguishes. (An earlier draft of this
-table listed 19797/19800/19801/19802/19803 as distinct services — wrong; corrected after reading the
-source.) We use `--port=19797` by LM convention; 19697+ is the CM range, do not copy CM tutorials.
+Regole:
 
-**Second channel: the debugger pipe.** In `stepped` mode yaAGC is launched *without* `--nodebug`, and
-its stdin/stdout are ours. That pipe carries `STEP <octal n>`, `COREDUMP <file>` and nothing else we
-need; the pause point it creates is also where we read state the socket cannot show (§3.1). Its
-prompt output includes the flight-software source line the AGC stopped at
-(`ADVAN () at EXECUTIVE.agc:475`) — free "what is Luminary doing right now" context for the viewer.
-
-### 3.1 Clock modes — pausing the whole simulation
-
-The plant is ours and trivially pausable. The question was whether **yaAGC** can be held too, since
-it drives itself off wall-clock (`SimManageTime` computes `DesiredCycles` from `times()`), and a
-naive `SIGSTOP`/`SIGCONT` would make it *fast-forward* on resume — burning through every missed
-cycle at max speed while the plant stood still. That would silently desynchronise the two.
-
-**It can be held cleanly, and the mechanism is the one yaAGC already supports.** In debug mode,
-`DbgHasBreakEvent` → `DbgExecute` blocks on stdin at the `(agc)` prompt, and the *first thing it
-does on receiving a command* is call `SimUpdateTime()`, which slides `RealTimeOffset` forward by
-however long it was blocked — cancelling the catch-up exactly. That function exists for no other
-reason; the debugger is the only caller. So:
-
-| Mode | How | What it's for |
-|---|---|---|
-| **realtime** | `--nodebug`, AGC free-runs, agent races the clock; late decisions land late | The honest, hard condition. The headline result. |
-| **stepped** | debugger `STEP <n>` (**n is octal**): AGC runs *n* instructions, stops, blocks at the prompt until we send the next command. Sim-time advances only when we say so. | The agent genuinely flies the vehicle. Think time is free. |
-| **replay** | no AGC at all — play a recorded log back (§3.2) | Watching, debugging, figures. |
-
-**Verified empirically, not just from source** (`scratchpad/step_probe.py`, `pause_probe.py`):
-- A 5 s pause before a `STEP 1000` advanced the AGC by 1,664 cycles vs 1,623 with no pause. No
-  fast-forward burst (that would have been ~427,000). The `SimUpdateTime` cancellation works.
-- **Stepped is paced 1:1 to wall-clock, not faster.** The step loop only runs while
-  `CycleCount < DesiredCycles`, and `DesiredCycles` grows with *un-paused* wall time. Measured:
-  `STEP 100000` took 1.92 s wall and advanced 192 cs of AGC time. Pausing is free; *speed-up is
-  not on offer* — a 12-minute descent costs ≥12 minutes of wall-clock plus thinking time. Going
-  faster than real time would need a patched `SimExecute`, which we are not doing (submodule stays
-  pristine). Replay (§3.2) is the fast way to *watch* one.
-- ~1.62 AGC cycles per instruction (1,623–1,664 per 1,000), so a fixed instruction count per tick
-  drifts a few percent against the plant's `dt`. `sim/clock.py` must **calibrate**: read
-  `CycleCounter` (in the core dump) periodically and adapt instructions-per-tick, and log the
-  plant-vs-AGC time drift as a first-class number.
-- **`COREDUMP <file>` exists as a debugger command** and costs ~15 ms. Too heavy per 50 Hz tick;
-  exactly right at the pause boundary once per guidance cycle. In `stepped` mode this replaces the
-  `--dump-time` polling for reading the DPS `THRUST` register — deterministic instead of racy.
-  `CoreDumpPoller` remains the `realtime`-mode mechanism.
-
-**Consequence worth knowing:** yaAGC is single-threaded and services its sockets in the same loop,
-so while it is blocked at the prompt it is not reading the channel socket. Plant→AGC pulses written
-during a pause queue in the TCP buffer and are consumed on resume. That is actually the correct
-semantics (they represent the interval that already elapsed), but it means *the pause boundary is
-also the I/O boundary* — do not expect the AGC to react to anything mid-pause.
-
-Note the inversion: the Gate 0 trap (yaAGC hangs forever without `--nodebug`, because the engine
-loop blocks on the debugger prompt) is *precisely* this feature. Same behaviour, opposite sign.
-`stepped` mode must therefore launch **without** `--nodebug`, with stdin held as a pipe.
-
-Design rule: nothing outside `sim/clock.py` may call `time.sleep`, read the wall clock, or assume
-sim-time equals wall-time. Every module takes `dt` from the clock. Break this and `stepped` and
-`replay` modes rot immediately.
-
-### 3.2 Record and replay
-
-Replay is **playback of a recorded log, not re-simulation.** No AGC process, no physics, no model
-calls — just reading back what happened. That makes it exact, instant, and dependency-free, and it
-is what makes both the viewer and `make reproduce` work.
-
-- **Record every tick:** plant state, all channel traffic in/out, DSKY registers, throttle register,
-  fuel, alarms, plus every agent intent, reasoning summary, tool call and safety veto.
-- **One line per tick, JSONL**, gzipped. An episode is minutes at 50 Hz — small.
-- **Self-describing header** (already required by §6): scenario seed, policy config, model hash,
-  prompt hash, git SHA, clock mode. A log that cannot say what produced it is worthless by week two.
-- **Play back at any rate:** 1× to watch it like a recording, faster to scan, scrub/seek because
-  Rerun gives you a timeline for free. A 40-minute stepped episode that took two hours of wall-clock
-  to run plays back in its true 12 minutes.
-- **Do not promise bit-exact re-simulation.** In `realtime` mode the AGC is wall-clock coupled and
-  will not reproduce identically. `stepped` mode is much closer to deterministic, which is a second,
-  quieter argument for it. Replay of the *log* is always exact; re-*running* is not.
-
-### 3.3 What you actually see
-
-The ask is simple: where is the vehicle, where is the ground, what is it doing, what is the agent
-thinking. In that order.
-
-- **Side-elevation profile (2D)** — the one that answers "am I about to hit something": terrain line,
-  LM marker with attitude tick, thrust vector, trajectory trail, target site, hazards. Cheap to
-  build, and it carries most of the value. **This comes first, in Phase 1b.**
-- **Terrain is synthetic and seeded, not real selenography** — and it is not extra work: §2.5 already
-  requires craters, boulder fields and slopes as *scenario* parameters, so the generator has to
-  produce a heightmap regardless. The viewer just draws what the scenario already contains.
-- **Telemetry strips** — h, ḣ, horizontal v, throttle, fuel-seconds-remaining, tilt, PROG/V/N, alarms.
-- **DSKY panel** — the real AGC display registers. This is the thing that proves the 1969 rope is
-  genuinely in the loop rather than claimed to be.
-- **Agent trace on the same timeline** — intent, reasoning summary, tool call, vetoes, so a bad
-  landing can be scrubbed back to the decision that caused it.
-- **3D** — LM body axes, thrust vector, trajectory ribbon over a heightmap. Phase 5. It is the least
-  informative per hour spent; the 2D profile already answers the altitude question.
-
-**Style: instrument panel, not dashboard.** Dark, monospace, two or three accent colours total
-(nominal / caution / alarm) and nothing else. Numbers with units and fixed decimal places over
-gauges and dials. No gradients, no drop shadows, no chartjunk, no decorative 3D. Every pixel either
-states a value or shows a trend. If an element does not change a decision, delete it.
+- Solo `sim/clock.py` modifica il tempo simulato. Nessun altro modulo usa `sleep` o wall clock per
+  far avanzare la fisica.
+- Il renderer è un osservatore: usa una coda bounded e non rallenta mai AGC, pianta o recorder.
+- Chiudere la finestra non interrompe l'episodio; `--no-ui` è sempre disponibile per test e batch.
+- Il replay legge log, non riesegue AGC/plant/modello e non usa localhost.
+- Il safety monitor è un controllore di emergenza separato, non una vittoria dell'agente.
 
 ---
 
-## 4. Stack decisions (prescriptive, tradeoff stated)
+## 4. UX nativa: semplice, geek, senza browser
 
-| Concern | Choice | Why, and what you give up |
-|---|---|---|
-| AGC emulation | `virtualagc` — build **only `yaYUL` + `yaAGC`** | The GUI components drag in GTK/wxWidgets/X11; `LM_Simulator` is Tcl/Tk and documented as running at fractional speed on Macs. You lose the ready-made DSKY; you write one in Python in a day and need a programmatic one anyway. |
-| Flight software | **Luminary 099** (Apollo 11) | The landing rope. Keep Luminary 131 as a swap-in — its source provenance is better validated. |
-| Language | Python 3.12, `numpy` plant | One language, one repo, one test runner. |
-| Package mgmt | `uv` | Fast, single lockfile. |
-| LLM runtime | **Ollama** + `qwen3:8b` primary, `llama3.1:8b` secondary | Native Metal, local endpoint, already in your stack. Less control than raw `llama.cpp`; drop down if you need GBNF grammar constraints. |
-| Structured output | JSON schema + validate + one repair retry + deterministic fallback | Small models emit malformed JSON often enough to matter. |
-| Visualisation | **`rerun-sdk`** | Local, pip-installable, 3D + synchronised time-series + text log on one scrubbable timeline. Add `matplotlib` for final figures. |
-| Sim clock | **Own it in `sim/clock.py`**, three modes (§3.1) | `stepped` mode is the difference between the agent flying the LM and the agent commentating on it. Cost: nothing outside the clock may touch wall-time, forever. |
-| Episode log | **gzipped JSONL, one line per tick** | Greppable, streamable, diffable, no schema migration pain, replays without the emulator. Bigger than a binary format; irrelevant at this scale. |
-| Orchestration | **Write your own loop.** No LangChain / CrewAI. | ~200 lines. Framework abstractions actively obstruct a latency-constrained loop with a veto layer. Deliberate call — and a defensible one to explain in an interview. |
+### Tecnologia e struttura
 
-**Day-1 risk check:** does `yaAGC` compile and run on macOS arm64? If not, fall back to a Linux
-container (colima + Docker) with the plant on the host and TCP across the boundary, or the
-WebAssembly build. Do not discover this in week 6.
+Usare `pygame-ce` con SDL nativo. Non usare browser, `webbrowser`, server HTTP, SSE, WebSocket,
+Rerun, Three.js o bundler nel percorso principale.
 
----
-
-## 5. Phase plan with gates
-
-Each phase has a **gate** (binary, demonstrable) and a **kill criterion**.
-
-### Phase 0 — Repo and emulator (week 1) · Track A
-- [x] Repo scaffold, `uv init`, ruff + mypy + pytest, pre-commit
-- [x] `virtualagc` as a **git submodule** at a pinned commit — never vendor it into your tree
-- [x] Build `yaYUL`, assemble Luminary 099 to a core rope, run `yaAGC` headless
-      (virtualagc has moved to top-level CMake since this plan was written — no more
-      per-directory Makefiles; see `src/luminary_agent/agc/build.py`)
-- [x] `AgcClient`: 4-byte channel packet encode/decode, including the `u` mask bit that lets
-      multiple peripherals share one input channel (protocol read directly from
-      `agc_utilities.c`'s `FormIoPacket`/`ParseIoPacket` — ground truth beats the doc)
-- [x] Text DSKY: press keys programmatically, read display registers back
-      (`src/luminary_agent/agc/dsky.py`, `client.py`)
-- [x] **GATE 0:** you type `V16N65` from Python and watch the AGC's mission timer tick.
-      Passing as `tests/integration/test_gate0_mission_timer.py`. Noun 65 = "SAMPLED AGC
-      TIME (HRS,MIN,SEC)" (confirmed in `PINBALL_NOUN_TABLES.agc`); R3 tracked real wall
-      time almost exactly (18.10s -> 20.10s over a 2.0s sleep).
-      **Trap hit and fixed:** yaAGC's `SimExecute` loop blocks forever on the interactive
-      debugger prompt reading stdin unless launched with `--nodebug` — without it the
-      engine never executes a single cycle, so no keystroke or channel write is ever
-      serviced. Not documented anywhere obvious; found by tracing `main.c` -> `SimExecute`
-      after the socket accepted a connection but never reacted to input.
-- [ ] Kill: no working `yaAGC` on any local path by end of week 2. (moot — closed week 1)
-
-### Phase 1 — Plant and instruments (weeks 2–4) · Track A ← the real work
-- [x] 3-DoF planar descent first (h, downrange, ḣ, v̇), RK4, 50 Hz (`plant/dynamics.py`).
-      **Audit correction:** the first version was a *flat-Moon* model, which is wrong exactly where
-      it matters. At PDI speed (~1.7 km/s) centrifugal relief v²/r ≈ 1.66 m/s² nearly cancels
-      lunar gravity (1.62), so a flat plant plunges a vehicle that is nearly in orbit. Now polar
-      about the Moon's centre (same state fields: tangential velocity, arc-length downrange).
-      Guarded by a circular-orbit test — the check a flat model cannot pass.
-- [x] DPS: throttleable 10–60% + fixed ~92.5% region, `ṁ = F/(g₀·Isp)`, Isp ≈ 311 s
-      (`plant/propulsion.py`; masses/thrust are placeholder Apollo-11-class numbers,
-      pending Phase 2 citations)
-- [x] Lunar gravity, μ = 4.9028e12 m³/s², R = 1737.4 km (`plant/gravity.py`)
-- [x] **IMU model** — specific force → PIPA pulse increments, stable-member frame → CDU angles.
-      Most failure-prone module in the project. Unit-tested against analytic constant-acceleration
-      cases *before* wiring it to the AGC (`plant/sensors.py`). Scale factors sourced from
-      `external/virtualagc/Contributed/LM_Simulator/lm_simulator.tcl` (PIPA 0.0585 ft/s/pulse;
-      CDU 360°/32768 counts, cross-checked against that file's independently-derivable
-      "39.55078125 arcsec" comment).
-- [ ] Landing radar with configurable lock-on delay and dropout
-- [x] Wire plant ⇄ AGC, partially: RCS jets (ch 5/6), engine on/off (ch 11), and the
-      throttle-update strobe (ch 14 bit 4) all read over the socket (`agc/actuators.py`).
-      **Real gap found:** the DPS throttle *magnitude* (Luminary099's `THRUST` register,
-      erasable address 055) is never broadcast over the socket at all — `agc_engine.h`
-      marks 055-056 "spares" (no hardware-counter behaviour), and yaAGC's `ChannelOutput`
-      (`agc_engine.c:659`) only ever fires from genuine channel writes, never from a plain
-      memory write. Decided (with the user) not to patch the pinned emulator submodule for
-      this; instead poll yaAGC's own `--dump-time` core-dump file, which is a complete text
-      snapshot including all erasable memory (`agc/coredump.py`, `CoreDumpPoller`), verified
-      end-to-end against a real running yaAGC in
-      `tests/integration/test_coredump_against_real_yaagc.py`. **Calibration now closed:** three independent (count, force) pairs annotated in the
-      flight-software source agree to 0.02% — `FMAXPOS` 3467 ↔ 43,454.7, `FMAXODD` 3841 ↔ 48,145.4,
-      `FEXTRA` 4096 ↔ 51,330.9 — giving **12.533 N per count**. `FMAX` is thrust at the fixed 92.5%
-      detent, so 100% is 46.98 kN, within 0.6% of the DPS's rated ~46.7 kN. This also exposed an
-      error in my earlier placeholder (43.9 kN was FMAX mistaken for 100%); `propulsion.py` now
-      derives `F_MAX_N` from it. The PADLOADS comment's "2.7 lbf/bit" is a 4% rounding of 2.82.
-      **Second finding, bigger:** re-reading `THROTTLE_CONTROL_ROUTINES.agc`, the `THRUST` register
-      is `PIF + PIFPSET` where `PIF = FC − FP` — a thrust **increment** (desired minus present),
-      not a level, slewed at 32 counts/cs by the hardware. The plant therefore needs a
-      `ThrottleActuator` that *integrates* the increments each `ch14 bit 4` strobe (~40 kN/s slew,
-      ~1 s full-range), not a "read the throttle level" shortcut. My earlier framing (poll the
-      register for the throttle) was wrong in kind, not just in units.
-      IMU pulses now sent as real `UnprogrammedIncrement` packets (`agc/registers.py`:
-      `pipa_pulse_packets`/`cdu_pulse_packets`, channel = `0x80 | register`, PINC/MINC for
-      PIPA, PCDU/MCDU for CDU) and verified against a live yaAGC in
-      `tests/integration/test_pipa_pulses_against_real_yaagc.py` (sent 17 pulses over the
-      socket, read back 17 in PIPAX via the core dump).
-- [x] Erasable-memory init via the V71/V72 update program (P27), not by poking memory
-      (`agc/uplink.py`, `agc/symbols.py`). Verified against a live yaAGC
-      (`tests/integration/test_uplink_p27.py`): a V71 block and a V72 scatter both land in
-      erasable, and P27 correctly *refuses* (writes nothing) outside P00.
-      **The ECADR question is closed:** `ECADR = bank·0400 + (addr & 0377)` for switched erasable
-      (`E3,1733` → `01733`), the address itself for unswitched; names resolve from the assembler
-      listing (`build.assemble` now saves it) so no address is ever hand-copied. Protocol limits
-      are P27's, read from source: V71 ≤ 18 words (II ≤ 20 decimal, II = words + 2), V72 ≤ 9 pairs
-      (II odd ≤ 19), data are unsigned octal at noun 01, `V33E` after the last entry is what makes
-      P27 store. Traps hit: (1) **octal vs decimal** — P27 data words are octal keystrokes but
-      V37's program number is decimal; typing `21` via an octal formatter selected P25 and quietly
-      wandered through P31/P51/P63; (2) keys must be interleaved with stepping (see clock item).
-      *Still to do for Gate 1:* double-precision scaling helpers (state vector, REFSMMAT are DP,
-      2^28 / 2^-1 scaled) and read-modify-write for flag words (V72 overwrites the whole word).
-- [ ] 6-DoF with RCS jet torques once 3-DoF closes
-- [ ] **Gate 1 prerequisite ledger** (audit of `THE_LUNAR_LANDING.agc` P63 + `R02BOTH`; the
-      one-line "load a state vector via V71" understated this badly). What P63 actually demands
-      before it will burn, with the status of each:
-      1. **`R02BOTH` IMU check** — needs `REFSMFLG` set in `FLAGWRD3` (REFSMMAT valid), else alarm
-         220 and abort to P00; also `IMODES30` bit 9 (ISS initialised) or alarm 210. → load
-         REFSMMAT + set the flag bit (V71/V72; read-modify-write, since V72 overwrites the word).
-      2. **State vector + landing site + times** — `RLS`, `TLAND`, LM state vector, `TEPHEM`
-         (`IGNALG` integrates forward to ignition). → V71 state-vector update (21 octal comps).
-      3. **`R60LEM` auto-attitude maneuver** — Luminary commands a slew to burn attitude through
-         the DAP and waits for the CDUs to converge. So the plant needs *attitude* (RCS jets that
-         actually rotate the vehicle, feeding CDU angles back) — or the vehicle initialised already
-         at burn attitude so the maneuver is a no-op. **This pulls 6-DoF (at least 3-axis
-         attitude) *before* Gate 1, contradicting the order the plan currently lists.**
-      4. **Hardware discretes on input channels 30-33** (inverted: 0 = present). yaAGC boots with
-         only ch30 bit 15 (stable-member temp OK) asserted. P63 needs at least LR antenna
-         position 1 (ch33 bit 6, else it prompts "crank the silly thing", code 500), and the DAP/
-         engine paths read ENGINE ARMED (ch30 bit 3), AUTO THROTTLE (bit 5), LM-computer-has-control
-         (bit 10), IMU operate (bit 9). → a `plant/discretes.py` nobody had listed.
-      5. **CDU registers seeded** to the initial gimbal angles (2^15 counts/rev; 4-6k pulses through
-         yaAGC's rate-limited CDU FIFO — fine in stepped mode).
-      6. **`R51P63` prompt** at `ASTNRET` — `ENTER` continues (no star sightings needed).
-      **Status (sub-gate 1a PASSED):** `plant/discretes.py` written from the channel
-      documentation and *verified against the flight software* — Luminary's T4RUPT `IMUMON`
-      mirrors what we write into `IMODES30` (polarity and bit positions confirmed live).
-      `sim/loop.py` runs plant + IMU → AGC → clock → recorder; a 3 s coast at PDI speed holds
-      altitude to <1 m, records 150 ticks, keeps plant/AGC time within 50 ms, raises no alarm.
-      **Finding — cold boot raises alarm 1107** (phase-table failure): erasable starts zeroed, so
-      the first restart finds an invalid phase table. FAILREG holds it until cleared. Not caused
-      by anything we send (present at 0.1 s of AGC time, before any I/O). Fix is what a crew does
-      after power-up: `V36E` fresh start (`SteppedDsky.fresh_start`). "No alarms" for every later
-      gate therefore means *no alarm after a fresh start*. Left MODREG = -0 (fresh-start mode);
-      P27 accepts it. **Decided for coasting (SUPERSEDED for P63 -- see the lunar-orientation finding below): REFSMMAT = identity**, so the stable member *is* the
-      Moon-centred inertial frame and the PIPAs measure specific force along inertial X/Y
-      (`sim/frames.py`: orbit in the X-Y plane, +X = local vertical at t0, +Y = direction of
-      travel). This also corrected a design error: the IMU model had split specific force into
-      local vertical/horizontal, but a stable-member accelerometer is inertial — the local
-      vertical rotates as the vehicle moves along its orbit. `PipaAxes(x=PIPAX, y=PIPAY)`.
-      **Sub-gate 1b progress.** DONE and verified against the flight software: a lunar-sphere
-      LM state vector loads through P27 (`agc/state_vector.py`, `agc/scaling.py`) and Luminary's
-      own `INTWAKEU` installs it — read back from the permanent `RRECTLEM/VRECTLEM/TETLEM`, never
-      written by us. Load flag is `-2` (`077775`: negative = LM, |2| = lunar sphere); scales are
-      position m B-27, velocity m/cs B-5, time cs B-28. The DP encoder is validated against
-      constants the assembler itself wrote (golden vectors from a real yaYUL listing, including a
-      negative), not against memory of the format. Scale conventions settled from flight-software
-      arithmetic rather than comments (which disagreed): **`RLS` is stored B-27** (P57 does
-      `VSL2` before `R-TO-RP` "gets RLS B-27"; P52LS undoes it with `VSR2`); `REFSMMAT` elements
-      are stored halved (B1 — the only reading that lets a unit element fit).
-      **STILL TO DO for 1b, and bigger than the ledger first said:**
-      7. **The W-matrix pad loads.** `TLAND` and every braking/approach-phase *guidance target*
-         (`RBRFG`, `VBRFG`, `ABRFG`, `JBRFG`, `RAPFG`, …) plus the throttle limits (`LOWCRIT`,
-         `HIGHCRIT`, …) are mission pad loads (128 words, EBANK 5) — zero after a fresh start,
-         which means P63 would aim at the origin. The repo has a documented catalogue with
-         values, units and scale factors: `Luminary069/PADLOADS.agc` (43 landing entries).
-         **Caveat to keep honest:** that is Luminary *69* — Apollo 10's software; Apollo 11's
-         values differ. Same guidance family, so it is a consistent nominal scenario, but it is
-         not "Apollo 11's pad load" and must not be described as one. → `agc/padloads.py`, parsed
-         from that file, tested against it.
-      8. `REFSMMAT` + `REFSMFLG` (read-modify-write of `FLAGWRD3`), `RLS`, and -- **corrected, this
-         was wrong the first time** -- the Moon's orientation (see "lunar orientation" below). An
-         earlier version of this item claimed `RP-TO-R` is identity to ~2 mrad; it is not.
-      Useful oracle found: `V06N89`/`V06N43` make the flight software convert `RLS` / position
-      back to lat-long-altitude, so a wrong scale shows up as an absurd altitude on the DSKY.
-      **1b RESULT (exploratory, will become a test): `V37E63E` engages P63 with no alarm.**
-      After fresh start, discretes, the landing pad loads, `REFSMMAT`+`REFSMFLG`, `RLS`, `TLAND` and
-      an LM state vector (all through P27), `MODREG = 63`, display `P63`, `FAILREG` clear — so
-      `R02BOTH` passed and P63 is running `IGNALG` (stop points in `INTEGRATION_INITIALIZATION`/
-      `INTERPRETER`). Pad-load work: `agc/padloads.py` parses Luminary 69's catalogue (121 entries;
-      all 26 landing ones resolve as erasable symbols in Luminary 99); **entries carry separate
-      TWO-PHASE and ONE-PHASE landing-mode values — Apollo 11 used one-phase, so that is selected
-      explicitly**; `TLAND` has no documented value ("launch date dependent") and is
-      scenario-supplied. `agc/loads.py` batches ~70 words into the fewest P27 sessions; loading the
-      full set and reading every word back takes ~57 s and raises no alarm. Parser bugs caught by
-      tests along the way: the assembler's `B-n` sign convention, a `\b`/`*` regex backtrack that
-      silently produced 0.0, and a bare `1DEC 3000` meaning an integer word (default B-14, B-28
-      for DP). **Practical consequence: stepped mode is wall-clock-paced, so experiments that need
-      minutes of AGC time cost minutes of real time** — budget for it, run long probes in the
-      background, and keep the integration suite's slow tests few.
-      **1b finding — alarm 1412 "DESCENT IGNALG NOT CONVERGING", diagnosed, not guessed.** The first
-      P63 run (circular 15 km orbit) ran `IGNALG` for ~56 s of AGC time, then raised 1412. That is
-      the flight software correctly rejecting an inconsistent scenario. `IGNALG` searches *along the
-      state vector's own orbit* for the ignition time at which the vehicle is at the pad-loaded
-      targets relative to the landing site: `RIGNZ` = −440 km ground range, `RIGNX` = −40.9 km
-      "altitude" (checks out: 15 km at 440 km range is 15 − 440²/2R ≈ −40.7 km in the tangent-plane
-      frame), `VIGN` = 16.995 m/cs = 1699.5 m/s. A circular orbit flies ~16 m/s under `VIGN` at
-      *every* point, so no choice of time can null a constant offset. The scenario must be a
-      descent **ellipse** with perilune speed ≈ 1699.5 m/s, and the site 440 km beyond perilune.
-      → `plant/orbit.py` (`DescentOrbit.with_perilune_speed`), whose Kepler time-to-perilune is
-      validated by integrating the RK4 plant for that time and arriving at perilune. Also aligned
-      the plant's Moon radius with Luminary's `RSUBM` = 1,738,090 m: the flight software measures
-      altitude above a sphere of exactly that radius, so a 690 m surface disagreement would show
-      up as the wrong touchdown altitude.
-      **1b finding -- how P63's ignition solver actually fails, and what it is telling us.** With a
-      `snapshot -> resume` harness (each experiment ~1 min instead of ~4) the internals of `IGNALG`
-      are observable (`NIGNLOOP`, `PIPTIME1`, `RGU`, `VGU`, all plain erasables). Two experiments:
-      (a) circular orbit: 40 iterations, time guess stepping by a *constant -2621.4 s* (= 2^18 cs, a
-      saturated correction), `RGU` swinging wildly, alarm 1412 (not converging). (b) descent
-      ellipse + landing-site `REFSMMAT`: alarm 1406 (bad return from `ROOTPSRS`) at iteration 1.
-      Reading `RGVGCALC`/`GUIDINIT`/`MOONMX` explained both. **(i) The guidance frame *is* the
-      stable-member frame** (`CG` = identity in `IGNALG`, `RGU = CG*(R - LAND)`), so `REFSMMAT` must
-      be the landing-site orientation, not identity; the loaded matrix reads back exactly as
-      intended. **(ii) `RLS` is Moon-fixed and `RP-TO-R` applies the Moon's real orientation**
-      (`MOONMX`: orbital elements + time since epoch; `TEPHEM` = ephemeris time at AGC zero).
-      Evidence: `|LAND|` = 1,738,0xx m matches `|RLS|` (so the scales are right) but its
-      *direction* in guidance coordinates is (-0.42, -0.22, +0.88) instead of (1, 0, 0) -- a
-      ~115 degree rotation. `RLS`, `TLAND`, `RRECTLEM` and `REFSMMAT` all read back exactly.
-      **Lunar orientation -- what has to be built (not yet done):** (1) port `MOONMX` (constants
-      `BSUBO/BDOT/FSUBO/FDOT/NODIO/NODDOT/SINI/COSI`, `MOONRATE` are fixed-memory 2DECs in the
-      source) to `plant/lunar_orientation.py`; the observed `LAND` above is a ready-made golden
-      test. (2) Choose the plant's orbit plane as the Moon's *equatorial* plane in the AGC's
-      reference frame (pole = row 3 of M), so lunar rotation is an in-plane rotation. (3) Compute
-      `RLS = M(T) * R_site_ref` for a chosen site. (4) **The plant must rotate the surface too**:
-      the site moves ~4.6 m/s inertially (omega_moon ~ 2.66e-6 rad/s) and the AGC computes velocity
-      *relative to the surface* (`V - WM x R`). A plant that ignores it carries a ~4.6 m/s
-      horizontal-velocity error into touchdown, against a 1.2 m/s limit -- a correctness
-      requirement, not a refinement. Also set `TEPHEM` deliberately (V70/V73 path) so the epoch is
-      a documented choice rather than an accident of a fresh start.
-      **1b RESULT -- `IGNALG` CONVERGES (sub-gates 1b and the first half of 1c pass).** With the
-      Moon-fixed `RLS = M(T)*(site)` from the ported `MOONMX`, the plant's orbit in the Moon's
-      equatorial plane (`sim/frames.py: LunarFrame`), and a landing-site `REFSMMAT`, the first
-      `IGNALG` iteration reads `RGU = (-42.6, -0.9, -436.3) km` against the pad-loaded targets
-      `(-40.9, 0, -440) km` -- where the identity assumption had given `(2.4 Mm, 377 km, -2.0 Mm)`.
-      The solver applies two small corrections (time guess 352.2 -> 349.9 s), the loop counter
-      freezes at 38 (`DDUMGOOD` exits early: converged), and P63 proceeds to **`V06 N61` with no
-      alarm**. `V06N61` is a crew acknowledgement prompt ("used by the crew in P63 to reset his
-      event timer to agree with TIG") -- P63's first DSKY decision, and therefore the agent's.
-      `TIG = 323.91 s` = `TDEC1 349.9 - ZOOMTIME 26 s`, exactly as `DDUMGOOD` computes it.
-      **Two more of my own errors caught on the way:** (1) `dp_decode` assumed both words of a
-      double-precision value share a sign; the AGC does not keep them normalised between
-      operations, and `TIG` read mid-computation is `(0o2, 0o77206)` = `2*16384 - 377` = 32391 cs,
-      which the old decoder read as ~651 s. That was plausible enough to waste time before the
-      geometry ("at 651 s the vehicle is 68 km past the site") showed it couldn't be right --
-      physical sanity checks on decoded values are worth doing. (2) My own porting tolerances were
-      tighter than the flight software's 8-digit constants can support (`sin^2+cos^2 = 1 - 3.2e-9`).
-      **Documented model gap:** the ported `M` reproduces the AGC's `LAND` direction to ~0.05%
-      (~1 km); no sign/transposition variant reduces it (best 933 m across all 16), so it is
-      recorded as a measured gap and not explained. The AGC stays the authority for where it
-      believes the site is.
-      **The P63 crew sequence, mapped through the flight software's own prompts** (each is a DSKY
-      decision -- the agent's decision space, discovered rather than assumed):
-      `V37E63E` -> ~60 s of `IGNALG` -> **`V06 N61`** ("reset your event timer to agree with TIG";
-      answer `V33E`, proceed) -> **`V50 N25`, R1 = 14** (checklist code 00014: PROCEED = IMU fine
-      align, needs star sightings; **ENTER = skip**) -> **`V50 N18`** (Luminary asks the crew to
-      approve the **automatic maneuver to the burn attitude**, with the desired FDAI angles in
-      R1-R3) -> `R60LEM` slews the vehicle -> LR antenna position (`ch33` bit 6, already
-      supplied) -> countdown, ignition, engine on at minimum throttle, throttle-up after
-      `ZOOMTIME` = 26 s. The first two prompts are answered from a script; `V50N18` is the wall.
-      Also observed: `THRUST` already reads -4096 (a -BIT13 increment) as ignition prep begins.
-      **Next wall = sub-gate 1d, attitude.** `R60LEM` needs a vehicle that rotates: jets on
-      ch5/6 must torque a body whose gimbal angles feed back into the CDU registers. The
-      cheaper route to sub-gate 1e (ignition) is to seed the CDU registers at the desired burn
-      attitude so the maneuver is a no-op -- the desired angles are readable from the AGC
-      (`THETAD`), the CDU is 2^15 counts/rev (~9.8k pulses for a 107 deg pitch, through yaAGC's
-      rate-limited CDU FIFO). That is a stepping stone, not a substitute: attitude dynamics
-      (6-DoF, or at minimum 3-axis rotation under RCS torque) is still required before the agent
-      can be asked to fly anything through R60/R65/R66.
-      **Sub-gate 1c PASSED -- P63 runs the whole pre-ignition sequence with no alarm.** Three
-      more prerequisites found (each was a silent stall or a misleading alarm, not an error message):
-      (1) **DAP mode switch must read AUTO** (`ch31` bit 14). `R60LEM` calls `G+N,AUTO` after
-      PROCEED and, if it fails, silently re-requests the maneuver forever. (2) **A CSM state vector
-      is required**: with `MUNFLAG` set (it is, in P63) `P41SPOT` runs `CSMPREC`, a precision
-      integration of the *CSM's* state, before the LM's; on an all-zero CSM state it raises 1703
-      "ignition time slipped". Loaded via V71 with flag `+2` (CSM, lunar sphere; the LM is `-2`).
-      (3) The maneuver prompt is *two* prompts: `V50N18` (approve) -> static `V06N18` (running) ->
-      `V50N18` again (**finished; ENTER ends R60**) -- I had read the second as a loop.
-      With those, the run reaches: `V06N62` countdown displays -> **RCS ullage jets at TIG-7 s**
-      (`ch5 = 0o210`) -> **`V99 N62` at TIG-4 s** (crew must enable the engine) -> throttle-up
-      command `THRUST = +4096` (= `FLATOUT`) at `TIG + 26.9 s` = exactly `ZOOMTIME`.
-      Then alarm 1406 from descent guidance -- expected: the plant wasn't running, so there was no
-      engine and no acceleration for the guidance to see.
-      **Next (sub-gates 1e/1f): close the loop through the burn.** Needs the `Simulation` loop
-      running from ignition with: engine-enable answered (`V99N62` -> `V33E`), `ThrottleActuator`
-      fed by the strobes, and the thrust *direction*. With no attitude dynamics the direction is
-      taken as perfectly pointed: `IGNALG` points the body X axis along `R60VSAVE`/`UNFC/2`
-      (the guidance's desired thrust unit vector, in stable-member axes), readable from the AGC.
-      That is the "perfect pointing" stepping stone and must be labelled as such in any result.
-      **1e/1f finding -- the PIPA pulse weight was wrong (mine, and it was hidden until the loop
-      closed).** The first full burn ended in a crash, 200+ km short. Comparing the AGC's own belief
-      (`RGU`/`VGU`, plain erasables) with the plant's truth showed *position* agreeing to <0.3% (so
-      frames, `REFSMMAT`, the ported lunar orientation and site placement were all right) but the
-      AGC's *velocity change* being exactly 0.498 of the truth: it sensed half the deceleration and
-      under-braked. Cause: `PIPA_SCALE_MS` = 0.0585 "ft/s", from the Tcl LM_Simulator stub,
-      unsourced as to units. Luminary's own constants give it exactly: `KPIP1 2DEC .0128` scales
-      `DELV` (pulses x 2^-14) to units of 2^7 m/cs => **1.0e-4 m/cs = 0.01 m/s per pulse**. 0.0585 is
-      the *Command Module's* 5.85 cm/s. After the fix `VGU` tracks truth: 231.8 vs 231.7 m/s. Lesson,
-      twice over now: a constant from a contributed stub is a hypothesis, and the flight software's
-      own arithmetic is the authority. The unit test now derives the value from `KPIP1`.
-      **Also found while closing the loop (both mine):** (a) `CHAN14` bit 4 is a *latched level*
-      (`WOR CHAN14 # TURN ON THRUST DRIVE` at fresh start), not a pulse -- counting rising edges
-      missed every throttle command after the first; the trigger is now `TTHROT`, the clock stamp
-      written with each command. (b) `UNFC/2` is rewritten every guidance pass, not on throttle
-      changes; sampled on a 0.5 s cadence. A stale value read at ignition (cross-range garbage
-      left by `IGNALG`) had been flown for 300 s, thrusting prograde.
-      **1f RESULT -- a full powered descent flown by the original rope, with an honest open problem.**
-      With the plant closed around Luminary 099 (no alarms during the burn): engine lights at 10%,
-      `FLATOUT` to the 43,455 N detent at TIG+26 s, thrust pitch 92 -> 71 deg (retro), **P63 -> P64
-      automatic phase switch at t = 577 s**, throttle-down 43 -> 15 kN, tangential speed 1707 ->
-      **10 m/s**, vertical speed -> **+0.5 m/s at 177 m altitude**, propellant 15,000 -> 7,971 kg.
-      Then the last ~30 s fail: pitch flips +-180 deg, thrust winds up to 43 kN, alarm 1410
-      ("unintentional overflow in guidance"), P65, and the vehicle climbs away. **Diagnosed with the
-      new checkpoint/resume (a 17 min run reproduces in ~1 min, deterministically):** the AGC
-      believes it has a persistent **cross-range** error at the site (`RGU_y` ~ -130 to -170 m; true
-      value 0 in the planar plant) -- from the documented ~1 km residual in the `MOONMX` port plus
-      lunar rotation moving the site under the vehicle -- so `UNFC/2`, its thrust command, becomes
-      *dominated by the out-of-plane component* (x 0.001 vs y 0.007 at t = 892). A planar plant
-      drops that component, the in-plane remainder is ill-conditioned (hence the +-180 deg pitch),
-      and the AGC never sees the correction it commands (no lateral acceleration reaches its PIPAs),
-      so it winds up. **The plant cannot yet express an error the AGC is trying to fix.**
-      Also noted: `MASS` in the AGC is a constant 6,804 kg (pad-load default) vs a true 8,100 ->
-      7,500 kg; the guidance closes on acceleration so this scales consistently, but the loaded
-      mass should be set deliberately.
-      **Options, in the order I'd take them:** (1) *out-of-plane dynamics* -- add a lateral position
-      and velocity so the plant obeys the full thrust vector (small: `a_lat = T*u_y/m - mu*z/r^3`),
-      PIPAY then responds and the AGC's cross-range loop closes instead of winding up; (2) *remove the
-      source*: read the AGC's own `LAND` after `IGNALG` and rotate `RLS` to cancel the port residual
-      (two-pass, ~2 min), so the AGC's site and the plant's coincide; (3) judge the landing against
-      the AGC's `LAND`, not the plant's own site. (1) is required regardless -- a real descent has
-      cross-range; (2) makes the baseline clean.
-      **1f FIXED -- the original rope lands the plant (t = 1037 s, zero alarms).** Touchdown at
-      **0.76 m/s vertical, 0.41 m/s horizontal relative to the surface** (limits 3.0 / 1.2), 7,367 kg
-      left. Two root causes, both found by inspecting the AGC's erasables against plant truth:
-      (a) the plant had no out-of-plane channel -- now `Simulation` integrates a linearised lateral
-      z from the out-of-plane part of `UNFC/2`, felt by PIPAY, so the cross-range loop closes (also
-      a pitch guard: hold last pitch when the in-plane thrust part vanishes); (b) **Luminary 099
-      moved P65/P66's constants (`V2FG` = (-3 ft/s,0,0), `TAUVERT` 600 B-14, `TAUROD` 300 B-12) from
-      fixed memory (as in 069) to erasable pad loads that its source does not provide** -- left at
-      zero, P65 divided by TAUVERT = 0, overflowed (alarm 1410) and Luminary then skips the throttle
-      call, freezing thrust. Now loaded from 069's values in `prepare_landing`.
-      **Caveats to carry into results:** touchdown is 301 m from the plant's own site (the AGC
-      steers to its own `LAND`, the ~1 km MOONMX-port residual plus lateral drift; judging against
-      the AGC's `LAND` is open); AGC `MASS` is 6,804 kg vs a true ~8,100; perfect pointing.
-      **Viewer (Phase 1b, first cut):** `python -m luminary_agent.viz.replay episode.jsonl.gz out.html`
-      -> one self-contained HTML (side elevation, auto-zoom to altitude, LM + thrust flame + velocity
-      vector, altitude grid, instrument readouts, play/pause, 0.5-20x, scrubber; 1x default = normal
-      speed replay of the saved log, no AGC needed). Terrain is a cosmetic profile; ground truth is
-      the h = 0 line. Not yet: real terrain from a scenario, AGC/DSKY panel, alarms timeline.
-      **Phase 3 started:** `scenarios/dispersions.py` (seeded truth-vs-belief dispersions, 3 tiers),
-      `eval/score.py` (judged from plant state only), `eval/run_null.py` (NullAgent = pure
-      Luminary, one scored JSON line per episode). **First finding:** without a landing-radar
-      model, the AGC never learns a start-state error, so it is brutally sensitive -- a 0.32 m/s
-      radial velocity error made pure Luminary hover at 406 m until propellant ran out; 1 m/s
-      crashed 850 m short at 42 m/s; 2 m/s crashed 7.9 km short. ~700 m per m/s. Tiers are scaled
-      accordingly; a landing-radar/LR-altitude channel (which is also the Apollo-11 decision
-      scenario, 2.3) is the next plant feature for tiers where the null baseline must not just fail.
-      **NullAgent at the recalibrated tiers (seed 0 each): all three land safely** (0.73-0.86 m/s
-      vertical, ~0.4 m/s horizontal, zero alarms, 518-993 kg propellant left, 34-345 m from the
-      plant's site). So at scales pure Luminary can absorb, the tiers are too easy for Gate 3, and
-      at scales it cannot (0.3 m/s and up) the failure is uninformative because nothing can fix it.
-      Harder tiers must come from axes an agent *can* act on: fuel margin (mass/propellant), engine
-      degradation/stuck throttle, 1201/1202 overload, and -- once modelled -- landing radar. Note
-      yaAGC's socket build stubs `RequestRadarData` (SocketAPI.c), so an LR needs RNRAD pulses
-      injected in step with the radar gate (RADARUPT after 9 TIME5 counts with CHAN13 bit 4 set),
-      the LR range/velocity discretes on CHAN33, and Luminary's R12 enables; sized as its own item.
-      **Eval sets:** `eval/sets.py` -- FROZEN = 3 tiers x seeds 100-119 (60), DEV = 3 tiers x seeds
-      0-4 (15), disjoint; `run_set --set frozen|dev`, `eval/report.py` prints per-tier summary.
-      **Blocker found for the ROD (P66) channel -- the baselines the plan wants ("PIDAgent on the
-      ROD channel", "ScriptedAgent: P63 -> P64 -> P66 takeover") cannot be built yet, for two
-      independent reasons, both verified:**
-      (1) *No delivery path.* Luminary counts ROD clicks in `DESCBITS`, reached only from MARKRUPT
-      (CHAN16 bits 6/7). yaAGC's socket build sets no interrupt for a CHAN16 write (only CHAN15 ->
-      KEYRUPT, 0173 -> UPRUPT; SocketAPI.c), and its debugger has no interrupt injection. Entering
-      P66 also needs the ATT HOLD discrete (CHAN31 bit 13 clear) *and* a nonzero `RODCOUNT`
-      (`STABL?`/`P66NOW?`). Prototyped: patching `RODCOUNT` = 1 in the stepped core file (what the
-      trap would do) plus CHAN31 bit 13 clear does switch Luminary to P66 (`MODREG` = 102). A
-      pause-boundary poke via core-dump resume is therefore feasible, as a documented deviation
-      from "never poke".
-      (2) *Missing pad loads.* Luminary 099's P66 law uses `RODSCALE`, `LAG/TAU`, `MAXFORCE`,
-      `MINFORCE` (and `TAUROD`, loaded from 069), erasable "I" variables whose values appear in no
-      source in the pinned repo (069 has different constants; 099 has no PADLOADS). At zero,
-      P66 commanded minimum throttle (4.7 kN) and the LM fell. Apollo 11's real values must come
-      from a sourced document (Luminary 1A pad-load listing / GSOP) -- not guessed.
-      Until both are resolved, the sourceable scenario axes are those that need no new actuation:
-      fuel margin, engine degradation, alarms, and (if modelled) the landing radar.
-      **Manual takeover works, and it is the first scenario where a decision matters.** Luminary's
-      polled R13 monitor (GUILDENSTERN) selects P67 when the auto-throttle discrete (CHAN30 bit 5)
-      clears, with no ROD click needed (verified: `MODREG` = 103, AGC stops commanding thrust) --
-      unlike ROD, this is deliverable through the socket. `policies/manual_lander.py` flies from the
-      plant's truth (radar-like) inside the DPS limits; `run_set --pilot manual`. **Tier 3 = a
-      navigation error the AGC cannot see (0.3 m/s, 100 m): pure Luminary 0/2 safe (vz 2.1/3.2,
-      vh 19/13 m/s), manual takeover 2/2 safe (vz 0.33/0.40, vh 0.00).** Caveats: n = 2; the pilot
-      does not steer to the site (site error ~600 m); its takeover rule is fixed (h <= 150 m or
-      P65), not yet a decision; ROD (P66) remains blocked (see above). The pilot, not the AGC, is
-      now the thing an LLM agent will replace: it decides *when* to take over and what to command.
-      **AGENT INTERFACE IS IN PLACE (the seam Track B plugs into).** `policies/base.py` `Policy`:
-      `decide(obs, t_s) -> Intent`, called on a cadence (>= 0.5 s sim time, or when the previous
-      intent's `valid_until_s` lapses) **while the whole simulation is paused**, so a slow policy
-      costs wall time, not simulated time (per-decision wall latency is recorded -- the input to
-      the realtime-vs-stepped result). `Observation` (`sim/observation.py`) is all an agent sees:
-      DSKY (prog/verb/noun/R1-R3), alarms raised, radar-like altitude / vertical rate /
-      surface-relative horizontal speed, thrust, mass, propellant, mode; `to_text()` for an LLM.
-      Intents: `hold`, `take_manual` (irreversible; clears CHAN30 bit 5 -> Luminary P67),
-      `command(descent_rate_ms, horizontal_ms)` (targets for the `ManualController`, clamped to
-      [-6, 0] m/s and +-5 m/s, clamping reported). `sim/executor.py` applies them and returns what
-      happened ("ok", "rejected: take_manual first", ...) -- never guesses. Every decision (obs,
-      intent, applied, latency) goes into the episode log; `NullAgent` and `ScriptedAgent`
-      (`policies/scripted.py`) are the two non-learning baselines; `run_episode --policy
-      null|scripted` (an LLM policy is one more entry in `POLICIES`). Verified end to end:
-      scripted through this path lands tier 3 seed 0 (vz 0.33, vh 0.00, takeover at t = 793 s,
-      808 decisions logged). **Viewer** now shows the DSKY (PROG/V/N/R1-R3), AUTO/MANUAL badge,
-      alarms, surface-relative horizontal speed, and a clickable decision log.
-      **Still open before the *first LLM run* is meaningful:** (a) the agent can only take over and
-      pick vertical/horizontal targets -- no abort, no site redesignation (ROD/LPD blocked as above;
-      abort needs an ascent plant); (b) no landing-radar dropouts/discrepancy events yet, so
-      "when to trust the radar" is not a decision; (c) no in-flight faults (engine degradation,
-      1201/1202) -- tier 3 is the only scenario where the choice matters; (d) realtime clock mode
-      is not driven end to end; (e) the LLM policy itself, prompts and tool schema (Track B).
-      **Radar and the AGC's own altitude are now in the observation (the LR-vs-computer decision).**
-      `plant/radar.py`: radar altitude with bias, noise and (tier 3) a 150-250 m dead band with no
-      lock somewhere in 100-400 m; `Observation.radar_altitude_m` (None when unlocked) and
-      `agc_altitude_m` (Luminary's own altitude read off the DSKY, N63/N64 R3, in feet -- only when
-      those nouns are displayed, never from AGC memory). Seen in a tier-3 episode: the AGC shows
-      258 m while the radar has no lock (t = 772-818 s), and Luminary's altitude runs ~180-380 m
-      above the radar's throughout (the hidden navigation error). `ScriptedAgent` now triggers on
-      *radar* altitude or P65, so it takes over when lock returns (t = 819 s) and lands both tier-3
-      seeds (vz 0.33/0.40). The radar does *not* feed the AGC (yaAGC socket build has no radar
-      path) and the ManualController still flies from true state (crew's eyes) -- simplifications
-      to state in any result. Decision (b) below is therefore partly closed; (a), (c)-(e) remain.
-      **Infrastructure added:** `run_descent`/`resume_descent` + `save_checkpoint` (AGC state via
-      yaAGC's core dump, plus plant, actuator and loop bookkeeping), `on_second` hook for AGC-vs-truth
-      comparison, non-fatal alarms with abort detected by Luminary leaving the landing programs,
-      `plant/surface.py` (touchdown judged relative to the rotating surface: ~4.6 m/s of the
-      inertial tangential speed at touchdown is the surface's own).
-      **Consequence for scheduling:** the plan's kill criterion (Gate 1 by week 6, else
-      `fallback_guidance/`) stands, but Gate 1 is now visibly a bundle of ~6 sub-gates. Track them:
-      **1a** IMU alive, no alarms, P00 stable with plant coasting · **1b** REFSMMAT/state vector
-      accepted (no 220/210) · **1c** V37E63E reaches `R60LEM` · **1d** attitude holds/slews with
-      plant feedback · **1e** ignition, engine on, throttle register moves · **1f** braking phase
-      descends monotonically. Do not report Gate 1 as one lump; report the highest sub-gate passed.
-- [ ] **GATE 1:** from a P63 ignition state, Luminary drives the plant through braking phase,
-      altitude decreases monotonically under AGC-commanded throttle, no AGC alarms.
-- [ ] Kill: gate 1 not passed by end of week 6 → `fallback_guidance/` (Python Klumpp quadratic
-      guidance + P66 rate-of-descent), identical plant / blackboard / policy interfaces.
-
-### Phase 1b — Debug viewer + clock + recorder (parallel, week 2 onward) · Track A
-- [x] `sim/clock.py` with `realtime` and `stepped` modes (§3.1), plus `agc/process.py` (the one
-      launcher for both). Verified against a real yaAGC (`tests/integration/test_stepped_mode.py`):
-      a 3 s pause causes no fast-forward; a paused world stays frozen (display unchanged over 2 s of
-      wall-clock) and stepping advances the mission timer by exactly what the AGC executed; the
-      stepped clock holds plant-time and AGC-time within 50 ms over 3 s of 50 Hz ticks by
-      calibrating instructions-per-tick against `CycleCounter`.
-      **Finding — I/O must be interleaved with stepping.** A keycode sits in channel 015 until
-      Luminary's KEYRUPT handler reads it; a second key written before that overwrites it. Firing
-      `V16N65E` back-to-back and then stepping loses keys (the display never rendered N65). Press a
-      key, step ~3,000 instructions, press the next. Same rule for anything channel-shaped; PIPA
-      counter increments are safe in bursts (each is consumed as read), keycodes are not.
-- [x] `sim/recorder.py`: gzipped JSONL, one line per tick, self-describing header (§3.2)
-      (`Recorder` refuses an empty header; `read_episode` streams, never loads the whole log)
-- [ ] Rerun time-series: altitude, ḣ, horizontal v, throttle, fuel, tilt, channel traffic
-- [ ] **Side-elevation profile with terrain line, LM marker, thrust vector, trajectory trail** —
-      the "where am I relative to the ground" view (§3.3). Cheap, and the single most useful panel.
-- [ ] `replay <log>` — play any recorded episode back at 1× (or any rate), no AGC needed
-- [ ] Not the 3D scene, not the DSKY replica — those are Phase 5.
-
-### Phase 2 — Domain research & taxonomy (week 4–5, overlaps) · Track A
-- [ ] Turn §2 into `docs/flight-contexts.md` with a source citation per failure mode
-- [ ] Reuse the Apollo/NTRS retrieval work to extract it; a structured taxonomy is a better
-      output from that corpus than free-form Q&A, and it is a repo artifact in its own right
-- [ ] For each mode: observable signature in telemetry/DSKY, required decision, time available
-- [ ] **GATE 2:** every scenario knob in Phase 3 traces to a cited real occurrence.
-
-### Phase 3 — Baselines and scenarios (weeks 5–6) · Track A
-- [ ] `NullAgent` (pure Luminary — the reference trajectory), `ScriptedAgent` (Apollo 11
-      timeline: P63 → P64 at hi-gate → P66 takeover), `PIDAgent` on the ROD channel
-- [ ] Scenario generator over the §2 axes, 3 difficulty tiers × 20 seeds = **60 frozen episodes**,
-      plus a separate 15-episode dev set you *are* allowed to tune on
-- [ ] **GATE 3:** baselines run all 60 and fail a non-trivial fraction. If they land 60/60 the
-      scenarios are too easy — make them harder now, not after the agent exists.
-
-### Phase 4 — The agent (weeks 7–9) · Track B
-Implement in this dependency order:
-1. **Typed tool interface** — no shell. `read_telemetry`, `read_dsky`, `key_dsky(seq)`,
-   `set_descent_rate`, `redesignate_site(az, el)`, `abort(stage)`, `hold()` (so "do nothing" is a
-   first-class action).
-2. **Hierarchical planner/executor.** Planner fires on phase transitions and anomalies plus a 5 s
-   heartbeat, emitting an intent with a validity window; a deterministic executor realises it every
-   tick and reports satisfied / violated / expired. This is what makes a 2 s-latency model viable.
-3. **Blackboard summariser.** The LLM never sees raw telemetry — a deterministic ~200-token flight
-   brief: phase, altitude, ḣ, horizontal v, fuel seconds, alarms, hazard assessment, time to next
-   decision point. Token budget is a design parameter; measure it.
-4. **Safety monitor with veto.** Deterministic envelope checks every tick, outside the LLM. Can
-   override or abort. The agent cannot disable it. Veto count is a headline metric.
-5. **Graceful degradation.** LLM timeout, malformed output after one repair, or Ollama crash → hold
-   the last valid intent, scripted baseline takes over. Test by killing Ollama mid-descent.
-6. **Reflection** after each episode → a short lesson from outcome + decision trace.
-7. **Episodic memory** — retrieve k most similar past scenarios by initial conditions, inject their
-   lessons. `sqlite` + `nomic-embed-text` via Ollama; no vector DB at this scale.
-8. **Self-consistency on irreversible decisions only** — abort/no-abort gets 3 samples and a
-   majority vote. Everything else single-shot; sampling everything triples latency for nothing.
-- [ ] **GATE 4:** nominal scenario end-to-end, zero safety vetoes, zero fallback activations.
-
-### Phase 5 — Full visualisation (week 10)
-- [ ] 3D: lunar heightmap, LM body axes, thrust vector, trajectory ribbon, target and hazards
-- [ ] DSKY replica showing the real AGC display registers — this is what proves the original
-      software is genuinely in the loop
-- [ ] Agent trace on the same timeline: intent, reasoning summary, tool call, vetoes
-- [ ] **GATE 5:** scrub a crash and see AGC display, agent reasoning and 3D attitude at the moment
-      it went wrong, in one window.
-
-### Phase 6 — Validation (weeks 11–12)
-**Per-episode success criteria** (mirroring LM design limits): vertical touchdown ≤ 3.0 m/s
-(≤ 1.0 nominal), horizontal ≤ 1.2 m/s, tilt ≤ 12° on ≤ 6° slope, within 100 m of target and clear
-of hazards, fuel remaining > 0 with the margin logged.
-
-**Metrics:** success rate, soft-landing rate, mean/σ touchdown speed, site error, fuel margin,
-vetoes per episode, fallback activations, LLM calls per episode, decision latency, total tokens.
-In `stepped` mode, report decision latency as **wall-clock cost per decision** and **sim-time
-elapsed while thinking (= 0)** separately — collapsing them hides the whole point.
-
-**Comparisons:** null · scripted · PID/MPC · LLM agent; plus two model sizes (4B vs 8B — the
-scaling curve for agentic control on a laptop is genuinely under-reported); plus **realtime vs
-stepped for the same policy on the same seeds** — the delta is a direct measurement of what
-real-time pressure costs an 8B model, which is a publishable number in its own right and is
-available to nobody who only built one clock mode.
-
-**Ablations over the frozen 60:** no reflection · no memory · no safety monitor (expect worse;
-report honestly) · no hierarchical split · flat prompt vs blackboard summary · no self-consistency.
-
-- [ ] Bootstrap CIs over seeds; 60 episodes is small — say so
-- [ ] `make reproduce` regenerates every number and figure from logs
-- [ ] **GATE 6:** results table + ablation table + 4 figures, reproducible from a clean clone.
-
----
-
-## 6. Repository layout (single project)
-
-```
-luminary-agent/
-├── README.md                     # 90-second demo GIF at the top
-├── pyproject.toml                # uv, single package
-├── Makefile                      # setup / agc / run / eval / replay / reproduce
-├── external/virtualagc/          # git submodule, pinned, never edited
-├── src/luminary_agent/
-│   ├── agc/          client.py channels.py dsky.py registers.py coredump.py
-│   │                 actuators.py uplink.py build.py
-│   ├── plant/        dynamics.py propulsion.py gravity.py sensors.py terrain.py
-│   ├── sim/          loop.py clock.py blackboard.py events.py recorder.py replay.py
-│   ├── policies/
-│   │   ├── base.py               # the Agent protocol — define in Track A
-│   │   ├── null.py scripted.py pid.py
-│   │   └── llm/      planner.py executor.py reflector.py memory.py
-│   │                 tools.py backend.py prompts/
-│   ├── safety/       monitor.py
-│   ├── viz/          rerun_viewer.py profile.py dsky_panel.py figures.py
-│   ├── scenarios/    generator.py definitions/*.yaml
-│   └── eval/         metrics.py runner.py report.py
-├── tests/            unit (sensors, dynamics) + integration (gate criteria)
-├── docs/             architecture.md agc-integration.md flight-contexts.md
-│                     agentic-patterns.md results.md
-└── results/          logs/ figures/ tables/
+```text
+src/luminary_agent/viz/
+  view_model.py       # dataclass ViewFrame; record/log → frame; testabile senza UI
+  native_app.py       # event loop pygame, live/replay e input
+  native_renderer.py  # layout, telemetria, DSKY, LEM, griglia, trail
+  lem_mesh.py         # mesh procedurale originale e parametri dimensionali
+  replay.py           # lettura streaming JSONL e timeline; nessun HTML
+docs/
+  lem-model-sources.md
 ```
 
-Every policy implements the same protocol so swapping is a config line. Prompts are versioned
-files with a hash logged per episode. Every episode log is self-describing (scenario seed, policy
-config, model hash, git SHA, **clock mode**) — otherwise the results table rots within a week.
+`Simulation` pubblica al massimo 20 `ViewFrame` al secondo di wall time. Il recorder continua a
+scrivere ogni tick; un renderer lento perde frame intermedi ma mostra sempre il più recente.
+`luminary view LOG` ricostruisce gli stessi `ViewFrame` dal log.
+
+### Finestra
+
+```text
+┌──────────────────────────────────┬────────────────────────────────────┐
+│ LEM wireframe low-poly originale  │ AGC / DSKY                         │
+│ (ascent + descent stage, gear)    │ PROG 63 VERB 06 NOUN 63            │
+│          thrust vector            │ R1 ... R2 ... R3 ...               │
+│                                  ├────────────────────────────────────┤
+│ griglia lunare grigia             │ ALT  V/S  HVEL  THR  FUEL           │
+│ target, traiettoria e trail       │ RADAR / AGC ALT / ALARMS            │
+│                                   ├────────────────────────────────────┤
+│                                   │ MODE / INTENT / VETO / REASON       │
+└──────────────────────────────────┴────────────────────────────────────┘
+```
+
+- Palette: sfondo quasi nero, griglia grigia, font monospaziato chiaro, un colore caution e uno
+  alarm. Niente gradienti, ombre, gauge o decorazione.
+- Dati reali: posizione, quota, velocità, spinta, massa, DSKY, allarmi, target, trail,
+  intenti e veto. Mesh LEM, griglia e plume sono visualizzazione; ogni semplificazione viene
+  dichiarata nella UI e nel README.
+- Comandi: `Space` pausa/riprendi la vista, frecce scrubbing replay, `1/2/3` camere,
+  `Esc` chiude solo la finestra. Una eventuale pausa della simulazione deve passare dal clock,
+  non dall'event loop della UI.
 
 ---
 
-## 7. Milestones
+## 5. Fasi: simulatore completo prima dell'agente
 
-| Week | Track A (now) | Track B (after course) | Gate |
-|---|---|---|---|
-| 1 | Repo + yaAGC running Luminary 099 | — | Mission timer read from Python |
-| 2–4 | Plant, IMU, closed loop + clock/recorder/debug viewer | — | AGC-commanded descent, no alarms |
-| 4–5 | Flight-context taxonomy from NTRS | — | Every knob traces to a cited event |
-| 5–6 | Baselines + 60 frozen scenarios | — | Baselines fail some |
-| 7–9 | — | Agent: tools, hierarchy, safety, memory | Nominal landing, no vetoes |
-| 10 | Full 3D + DSKY replay | — | Scrub a crash in one window |
-| 11–12 | — | Eval + ablations | Reproducible results table |
+### Fase S0 — Integrità, metriche e provenienza
 
-Slip budget: 2 weeks. If Phase 1 eats it, take the fallback guidance path — do not extend.
+1. Rimpiazzare `Score.safe` con `soft_touchdown` e aggiungere `mission_success`/`not_scored`.
+2. Riportare sempre errore target, fuel, safety veto, fallback e decision count nella summary.
+3. Aggiungere i fingerprint AGC, rope, patch, scenario e codice nell'header JSONL.
+4. Spostare la patch free-run in worktree/cache di build oppure dichiarare apertamente il submodule
+   modificato e loggarne il diff hash.
+5. Aggiornare test unitari per punteggio, provenance e summary.
+
+**Gate S0:** un landing a 802 m può essere `soft_touchdown=true`, ma non `mission_success=true`;
+ogni log ha provenance completa; le unit test aggiornate passano.
+
+**Stato S0 (verificato 2026-09-20 sul Mac locale):**
+- Punti 1, 2, 3, 5: fatti. `Score` ha `soft_touchdown` + `mission_success` (`not_scored` finché
+  `surface_scored=False`); summary/report mostrano target error, fuel, decisioni, safety veto,
+  fallback; l'header JSONL contiene `provenance()` (git SHA/dirty, commit VirtualAGC, hash patch,
+  hash diff submodule, hash yaAGC, rope, listing, scenario).
+- Punto 4: build in worktree/cache (`results/cache/agc`): patch applicata lì, yaAGC e rope
+  (`Luminary099/MAIN.agc.bin`) compilati lì. Submodule `external/virtualagc` **pulito**
+  (`git status` vuoto; la vecchia patch a mano era identica a `patches/yaagc-free-run.patch`,
+  verificato con `cmp` prima del `checkout`). Provenance: `virtualagc_dirty=false`,
+  `virtualagc_diff_sha256` = hash di diff vuoto, patch hashate in `patch_set_sha256`.
+- Test: `pytest tests/unit` 242 passed; `ruff` e `mypy` puliti; `pytest tests/integration`
+  14 passed.
+- Non verificato: nessun nuovo episodio end-to-end con la provenance nel JSONL (run da ~20 min non
+  eseguito); i log esistenti in `results/runs/` precedono S0 e non hanno i nuovi campi.
+
+### Fase S1 — Completa la pianta e l'interfaccia di simulazione
+
+**Obiettivo:** fare in modo che ciò che Luminary comanda sia traducibile in uno stato del LEM
+fisicamente coerente e misurabile prima della grafica finale.
+
+1. Consolidare 3-DoF/laterale esistente: riferimento lunare, gravità, massa, DPS, throttle
+   incrementale, sensori PIPA/CDU, discreti, radar lock/dropout e superficie rotante.
+2. Per ogni sensore/attuatore, aggiungere test analitico e integration test AGC; segnare unità,
+   segni, scaling e canale in `docs/agc-integration.md`.
+3. Scegliere esplicitamente il confine MVP: 3-DoF con pitch comandato è sufficiente alla prima
+   discesa; 6-DoF/RCS torque non entra finché mancano test frame/attitude.
+4. Rendere `NullAgent` e `ScriptedAgent` eseguibili con safety on/off. Stabilizzare lo scripted
+   fino a non dipendere da rescue safety per un caso nominale.
+5. Completare `mission_success` soltanto quando surface model espone target, hazard e pendenza;
+   fino ad allora lasciare il campo non calcolato.
+
+**Gate S1:** da uno stato P63, Luminary guida la pianta fino a soft touchdown in un caso nominale;
+canali, PIPA/CDU, throttle, DSKY e log sono osservabili; integration test AGC passano sul Mac locale.
+
+**Stato S1 (verificato 2026-09-20 sul Mac locale, dopo pulizia di `results/logs` e `results/runs`):**
+- Punto 1/3: pianta 3-DoF già completa; confine MVP dichiarato in `docs/agc-integration.md`.
+- Punto 2: `docs/agc-integration.md` (unità, segni, scaling, canale, test unitario + integration per
+  ogni segnale). Il radar NON raggiunge l'AGC (solo osservazione): dichiarato, non modificato.
+- Punto 4: tier 1 seed 0, tre run reali con la provenance nell'header: `scripted` con safety on e
+  off → soft touchdown, 0.34 m/s verticale, 0.00 orizzontale, 6.8 m dal target, 0 veti, risultato
+  identico (nessuna dipendenza dalla safety); `null` → soft touchdown 0.79 m/s, 375 m dal target,
+  0 veti. ~21× real-time. `mission_success` = `not_scored` in tutti.
+- Punto 5: invariato (`not_scored`, per S2).
+- Test: unit 242 passed, ruff/mypy puliti, integration 14 passed. `ruff` ora esclude `results/`.
+- Tier 2/3 seed 0 con safety on (run reali): t2 scripted soft, 0 veti, 177 m dal target; t2 null
+  soft, 0 veti, 194 m; t3 scripted soft, 4 veti, 801 m; t3 null NON soft (4.5 m/s orizzontale),
+  4 veti. Nel tier 3 (100 m di errore d'altitudine) la safety interviene: il risultato non va
+  attribuito al solo agente.
+- **[SUPERATO in S4: quei run non erano deterministici; usare `results/tables/baselines-dev.md`]** Batteria completa (2026-09-20, safety on, 150 episodi, `results/logs/{dev,frozen}/{null,scripted}`),
+  soft touchdown: dev null 8/15, dev scripted 14/15; frozen null 35/60 (T1 20, T2 14, T3 1),
+  frozen scripted 40/60 (T1 20, T2 14, T3 6). `mission_success` = `not_scored` ovunque. Tier 1:
+  0 veti; tier 3: la safety interviene (mediana 4 veti sul frozen), quindi quei numeri non sono
+  attribuibili al solo agente. Molti T3 (vh 150-500 m/s, target km) toccano terra prima del
+  takeover dello scripted (150 m): per progetto T3 non è sopravvivibile da Luminary da solo.
+- Difetto trovato e **risolto**: ~2 % degli episodi (3/150) andava in timeout 60 s sulla pipe del
+  debugger di yaAGC. Causa radice: lost-wakeup in `yaAGC/nbfgets.c` (il thread di input imposta
+  `nbfgetsReady`, poi prende il mutex e aspetta; se il main consuma e fa `broadcast` in quella
+  finestra, il segnale si perde e il thread non legge più stdin). Riprodotto con una tempesta di
+  `STEP 1` su 16 yaAGC paralleli (1/16 bloccato col binario vecchio), corretto in
+  `patches/yaagc-free-run.patch` con un predicato sotto mutex. Dopo la correzione: 3 × 16 × 6000
+  step senza blocchi, dev set scripted a 8 worker senza ritenti, risultati identici ai precedenti.
+  Regressione: `tests/integration/test_stepped_stress.py`. Il ritento in `run_set` resta come rete
+  di sicurezza.
+
+**Non fare:** estendere subito a abort, P66, LPD, RCS failure o 1201/1202. Sono capacità separate.
+
+### Fase S2 — Superficie e LEM originale
+
+**Obiettivo:** completare il modello visivo e il terreno minimo, senza compromettere rapidità.
+
+1. Raccogliere fonti dimensionali/prospetti pubblici del LEM e creare `docs/lem-model-sources.md`.
+2. Implementare la mesh procedurale originale del LEM con parametri e test di proporzioni/silhouette.
+3. Implementare una superficie sintetica seedata: griglia grigia sempre disponibile; hazard e slope
+   sono dati della scenario surface e non decorazione casuale.
+4. Collegare target, hazard e slope allo scorer solo dopo averli resi parte della pianta.
+5. Esporre in log e `ViewFrame` i dati necessari a spiegare perché un touchdown sia/not mission
+   success.
+
+**Gate S2:** il LEM visibile è riconoscibilmente Apollo LM e costruito dal codice del repo; la sua
+proporzione è verificabile contro fonti documentate; la griglia mostra target e superficie seedata;
+un hazard/slope influisce realmente sul punteggio, quando attivato.
+
+**Stato S2 (2026-09-20, sul Mac locale):**
+- Punto 1: `docs/lem-model-sources.md` documenta origine (NASA), licenza (da confermare), procedura e
+  cosa è/non è verificato. Le dimensioni pubblicate restano `[doc]` non controllate (nessuna rete).
+- Punto 1-2 (rivisti dopo il GLB): il modello procedurale a poligoni è stato **sostituito** da una
+  mesh a 9 127 triangoli (75 KB, `lem/lem_mesh.npz`) ricavata una volta dal modello NASA
+  (https://science.nasa.gov/3d-resources/apollo-lunar-module/, `docs/Apollo Lunar Module.glb`) con
+  `lem/glb_mesh.py` (scala a 7.04 m, niente antenne/parabole/dettagli < 5 cm, semplificazione per
+  vertex clustering, colore per faccia). Runtime: solo `load_lem_mesh()`, il GLB non viene letto.
+  Test `test_lem_mesh.py`: mesh ben formata e < 15k triangoli, suola a z=0, un piede su ciascun
+  asse, apertura ≈ 9.0 m, sovrapposizione dei contorni col riferimento (0.93 / 0.90 / 0.99; sotto 1
+  perché il riferimento include le antenne), rendering non vuoto. `lem/preview.py` disegna tre viste
+  ombreggiate. Ripulito: rimosso il vecchio modello procedurale (`model.py`) e il suo SVG.
+  DracoPy serve solo per ricostruire la mesh (`uv run --with DracoPy`), non è in `pyproject`.
+- Aperto: **licenza** da incollare da quella pagina NASA in `docs/lem-model-sources.md` (fonte
+  NASA indicata dall'utente, non verificabile da qui); **scala assoluta** legata a 7.04 m di altezza
+  con conflitto sulla larghezza degli stadi (5.8 m nel modello contro ~4.2 m ricordati); le
+  dimensioni pubblicate restano `[doc]` non controllate. La *forma* è quella NASA.
+- Punto 3: `plant/terrain.py`, `Surface.sample(seed)`: bersaglio libero e piatto entro 30 m, 150
+  crateri + 500 massi + 30 rilievi gaussiani entro ±2.5 km; `grid()` per il renderer S3. Su punti a
+  caso entro 1 km: ~3.5 % ostacolo, ~1.6 % pendenza > 12°.
+- Punto 4: `score(result, dry, surface)`; `mission_success` = soft ∧ bersaglio ≤ 100 m ∧ senza ostacolo
+  ∧ pendenza ≤ 12°. `run_episode` usa la superficie di default (`--no-surface` → `not_scored`).
+  Lo scorer vede anche l'errore laterale (prima solo down-range). Hazard e pendenza cambiano il
+  verdetto: test unitari e, sul landing reale dev scripted t1_s0 (6.8 m dal bersaglio), un masso o
+  una pendenza piazzati sotto il punto d'arrivo lo rendono `mission_success=false`.
+- Punto 5: header `surface` + riga finale `landing` (`read_landing`) con score e assessment.
+  `ViewFrame` non esiste ancora (è S3): i dati sono nel log, da leggere lì.
+- Test: 270 passed (unit + integration), ruff/mypy puliti (dopo la mesh: `pytest tests`).
+- **[SUPERATO in S4: quei run non erano deterministici; usare `results/tables/baselines-dev.md`]** Dev set (15 episodi/policy, safety on, surface on, 0 stalli): null soft 8/15, mission_success
+  0/15; scripted soft 14/15, mission_success 8/15 (T1 4/5, T2 3/5, T3 1/5). I 6 soft-non-mission
+  dello scripted falliscono per distanza dal bersaglio (1 anche per ostacolo). Nessun caso reale
+  deciso da solo da ostacolo/pendenza: succede solo con sito sfavorevole.
+- Limiti dichiarati: contatto fisico ancora sul piano a quota 0 (la superficie non altera la
+  dinamica); soglia 12° e raggio del piede sono giudizio ingegneristico da verificare; il gate S2
+  "LEM riconoscibilmente Apollo LM" (l'utente deve approvare il preview) e "proporzione verificabile
+  contro fonti" (checklist in `docs/lem-model-sources.md`) restano **aperti**.
+
+### Fase S3 — Finestra nativa live/replay
+
+1. Aggiungere `pygame-ce`, ViewFrame e renderer nativo.
+2. Collegare UI live al loop con coda latest-wins, senza cambiare recorder o clock.
+3. Disegnare LEM, griglia, trail, target, thrust, DSKY, telemetria, allarmi e stato policy/safety.
+4. Implementare lo stesso renderer per replay JSONL offline con scrubbing.
+5. Rimuovere da `luminary fly` e `luminary view` apertura browser, HTTP server e SSE. Il viewer HTML
+   può restare temporaneamente non documentato solo per debug, poi verrà eliminato.
+
+**Gate S3:** da clone pulito, `make agc && uv run luminary fly --tier 3 --seed 0 --policy scripted`
+apre una sola finestra nativa, mostra una discesa con DSKY live, salva il JSONL e termina con un
+verdetto chiaro. `uv run luminary view LOG` riproduce lo stesso episodio senza browser, AGC,
+Ollama o server localhost.
+
+**Stato S3 (2026-09-21, sul Mac locale):**
+- Punto 1-3: `pygame-ce` (in `pyproject`), `viz/view_model.py` (`ViewFrame`, `FrameBuilder`),
+  `viz/native_renderer.py`, `viz/native_app.py`. Finestra 1280×720: scena (mesh LM NASA con l'assetto
+  del plant, pennacchio ∝ spinta, griglia con tinta di pendenza, bersaglio con anelli 30/100 m,
+  crateri e massi seedati, scia), profilo della discesa, quota vera/radar/AGC (ultimi 200 s), DSKY con
+  spie ENGINE/MANUAL/ALARM, telemetria, stato della politica (modo, decisione, motivo, veto),
+  verdetto e legenda "reale / disegnato / 3-DoF". Tre camere (1/2/3), pausa della vista, scrubbing,
+  velocità 0.5×–60×.
+- Punto 2 (live) — **scoperta**: una finestra nello stesso processo (anche in un thread) rallenta la
+  discesa di ~5× (209 s invece di 45 s): la simulazione è una catena di piccoli scambi con l'emulatore
+  (limitata dalla latenza) e il thread di disegno tiene il lock dell'interprete a fette. Soluzione: la
+  discesa gira in un **processo separato** e manda i frame su una coda limitata (`viz/live.py`,
+  `LiveFeed`/`LiveReader`, latest-wins). Misurato (tier 3 seed 0 scripted, finestra headless): 18.8×
+  il tempo reale, 27 fps di disegno, 43.7 s in tutto. Chiudere la finestra non ferma l'episodio;
+  `--no-ui` esegue senza finestra.
+- **Bug preesistente trovato e corretto**: `run_episode` accettava `live` ma non lo passava a
+  `run_descent`; il vecchio viewer live non riceveva nulla. Ora sì (`live=live`).
+- **Bug di prestazioni trovato e corretto**: `pygame.draw.line` con segmenti tagliati al piano vicino
+  (estremi a milioni di pixel) costava 3 ms a linea → 1.6 s a frame; ora si clippa prima
+  (`Rect.clipline`): 23 ms a frame (~40 fps).
+- Punto 4 (replay): `luminary view LOG` legge il log (`viz/replay.py`, 10 Hz) senza AGC, emulatore,
+  Ollama, browser o localhost; `--screenshot out.png --at T --camera N` per un PNG senza finestra.
+  A fine episodio la finestra live passa da sola al replay del log a piena risoluzione.
+- Punto 5: rimossi `viz/replay3d.html`, `viz/vendor/three.min.js`, il server HTTP/SSE, `webbrowser`, la
+  generazione degli `.html` in `run_set`. `luminary fly --no-view` è diventato `--no-ui`.
+- Test: 292 passed (unit + integration), ruff e mypy puliti. Nuovi: `test_view_model`, `test_replay`,
+  `test_live_feed` (incl. attraverso un processo `spawn`), `test_native` (SDL dummy: tutte le camere,
+  cache degli sprite, `Player`, verdetto, ciclo eventi, screenshot).
+- Verificato end-to-end **headless** (driver SDL dummy) con il vero percorso di `luminary fly --tier 3
+  --seed 0 --policy scripted`: DSKY live, verdetto "SOFT TOUCHDOWN - NOT MISSION SUCCESS" (816 m dal
+  bersaglio), log salvato. **Non verificato a occhio**: una finestra reale sul display del Mac
+  (aspetto, fluidità, tasti) e `make agc` da clone pulito; la verifica interattiva va fatta a mano.
+- Limiti dichiarati: pitch/assetto solo nel piano (nessuna rotazione laterale disegnata); la scena a
+  400 km dal bersaglio mostra soprattutto il LM e la scia (la vista utile ad alta quota è il profilo);
+  la mesh è una semplificazione del modello NASA (licenza da confermare, vedi S2).
+
+### Fase S4 — Scenari, baseline e accettazione del simulatore
+
+Scenari iniziali, perché sono già osservabili e influenzabili dalle azioni disponibili:
+
+- errore di stato iniziale rivelato dalla discrepanza radar/AGC;
+- dropout/bias radar;
+- degradazione DPS e riduzione margine propellente;
+- dispersioni massa e spinta;
+- target, pendenza e hazard della superficie seedata.
+
+Per ciascuno servono: seed, parametro, osservabile, azione disponibile, fonte, expected outcome e
+test. Non introdurre un evento che l'equipaggio non può leggere o modificare.
+
+Baseline richieste: `NullAgent`, `ScriptedAgent`, safety on/off; PID/MPC solo se serve a isolare un
+limite del ManualController. Il batch usa 15 episodi dev (3 tier × 5 seed); i 60 frozen arrivano
+dopo l'agente.
+
+**Gate S4 — SIMULATORE COMPLETO:**
+
+- `luminary fly`, `--no-ui`, `view` ed `eval` funzionano da clone pulito;
+- la finestra nativa usa il LEM originale del repo e non il browser;
+- un log può essere spiegato solo con UI + JSONL, senza AGC in esecuzione;
+- baseline producono tabella con soft touchdown, mission success/not scored, target error, fuel,
+  decisioni e safety; `NullAgent` fallisce almeno alcuni casi duri;
+- 100% dei test unitari e integration AGC passano localmente;
+- limiti espliciti 3-DoF/6-DoF, azioni non supportate e differenza dati reali/cosmetici sono visibili.
+
+L'agente LLM non inizia prima del Gate S4.
 
 ---
 
-## 8. What makes this defensible rather than a toy
+**Stato S3 — aggiornamento (2026-09-21):** la finestra è stata **approvata dall'utente a vista**
+("astonishing and beautiful"). Due ritocchi richiesti e fatti: la superficie è sempre visibile (piano
+grigio scuro con griglia e orizzonte, a qualunque quota) e la camera resta a **32 m** dal LM (prima
+si avvicinava con la quota). Resta non verificato solo `make agc` da clone pulito → **fatto in S4/DOC**
+(sotto).
 
-- The original 1969 rope is *actually executing* and its DSKY output is visible in the replay.
-  Verifiable on screen, not claimed in a README.
-- The scenario set is derived from documented Apollo failure modes with citations, not invented.
-- The agent works under a real latency constraint that forces a hierarchical design, and the
-  ablation quantifies what that hierarchy buys. Better: the same policy runs with the constraint
-  (`realtime`) and without it (`stepped`, §3.1), so the cost of real-time pressure is *measured*
-  rather than asserted — and pausing does not weaken the claim, it turns it into a result.
-- Any episode can be replayed exactly, at true speed, with the AGC display, the terrain, the
-  trajectory and the agent's reasoning on one timeline (§3.2, §3.3). Nothing has to be taken on
-  trust; the failure is on screen at the tick it happened.
-- The safety layer has veto power over the model, and you report how often it fires.
-- 60 frozen seeds, four policies, six ablations, bootstrap CIs.
-- Runs on one laptop, no API key, and `make reproduce` proves it.
-- If the agent underperforms, the environment and benchmark stand alone as the contribution.
+### Stato S4 (2026-09-21, sul Mac locale)
 
-## 9. Traps
+- **Scenari** → `docs/scenarios.md`: cinque scenari (S-1 errore di stato, S-2 radar bias/dropout,
+  S-3 degradazione DPS, S-4 massa/spinta/propellente, S-5 superficie) con seed/manopola, osservabile,
+  azione disponibile, fonte (con etichette rope/measured/doc), esito atteso e test. Per rispettare
+  "nessun evento che l'equipaggio non può leggere" **`Observation` ora include il bersaglio (sotto
+  3 000 m) e pendenza/ostacoli (sotto 500 m)**: prima l'agente non poteva vedere cosa decide
+  `mission_success`. `flight-contexts.md` aggiornato (superficie non più "non modellata").
+- **Scoperta grave: il volo non era deterministico.** Cinque copie dello stesso episodio in parallelo
+  davano 2-3 risultati diversi (1.60 / 2.58 / 0.76 m/s); batch con monitor acceso e spento non
+  coincidevano nemmeno senza veti. Causa: yaAGC è pilotato su due canali non ordinati (pacchetti TCP e
+  comandi sulla pipe) e l'ordine d'arrivo dipendeva dallo scheduling. Correzione in due barriere
+  (`patches/yaagc-free-run.patch` + `agc/handshake.py`): `STEP n B` attende i B byte inviati dal
+  client; un marcatore (canale 0377) sul socket prima del prompt garantisce che il client abbia letto
+  tutto l'output del comando. Verifica: 4 round × 5 copie affiancate (tier 2 seed 1) e 1 round × 5
+  (tier 3 seed 2) → risultati identici; un test d'integrazione (`test_determinism.py`, 6 copie, cycle
+  counter identici) fallisce col vecchio comportamento ~1 volta su 4 e passa col nuovo; velocità
+  invariata (~20× il tempo reale). Le baseline sono state rigenerate dopo la correzione.
+- **Baseline** (`results/tables/baselines-dev.md`, 15 episodi dev × {null, scripted} × {safety on,
+  off}, deterministiche): null soft 5/5 · 3/5 · 0/5 (tier 1-3), mission 0/15; scripted soft 14/15,
+  mission 8/15 (4/5, 3/5, 1/5). **`NullAgent` fallisce i casi duri** (tier 3: 0/5, propellente
+  mediano 0). Negli episodi senza veti safety on/off è identico bit a bit (9/9 null, 13/13 scripted);
+  i veti (13 in 6 episodi null, 5 in 2 scripted) non cambiano nessun atterraggio morbido.
+- **Gate S4**: `luminary fly` (finestra, provata con driver SDL dummy dal vero percorso CLI e a vista
+  dall'utente), `--no-ui`, `view` (anche `--screenshot`) ed `eval` (usato per le baseline) funzionano;
+  la finestra usa la mesh NASA del repo, non il browser; un log si spiega con UI + JSONL (`view` senza
+  AGC); limiti 3-DoF, azioni non supportate e reale/disegnato sono nella legenda della finestra;
+  **296 test** (unit + integration AGC) passano localmente, `ruff` e `mypy` puliti.
+  **Aperti, dichiarati**: licenza del modello NASA da incollare in `docs/lem-model-sources.md`; le
+  dimensioni pubblicate del LM restano `[doc]` non controllate; il set frozen (60) non è stato
+  rieseguito dopo la correzione del determinismo (i vecchi log dei 150 episodi della Fase S1 non sono
+  più riproducibili bit a bit e non vanno citati).
 
-- Hand-patching erasable memory instead of using the uplink path — kills reproducibility and the
-  historical claim at once.
-- 6-DoF before 3-DoF closes: you will not be able to separate an integrator bug from an IMU sign
-  error from a wrong channel bit.
-- Letting the LLM see raw telemetry — token cost explodes, quality drops, latency budget dies.
-- Tuning on the frozen 60. That is what the 15-episode dev set is for.
-- Building the polished 3D viewer in week 3 because it is more fun than the IMU model. It is, and
-  it is also how this project dies. The Phase 1b *debug* viewer is the exception — build that,
-  including the 2D terrain profile (§3.3), which is an hour of work and answers the only question
-  that matters early. The 3D scene, the textured Moon and the DSKY replica are Phase 5. If you
-  find yourself picking colours before Gate 1 has passed, stop.
-- Letting wall-clock assumptions leak outside `sim/clock.py` — a `time.sleep` in the plant or a
-  timestamp taken in a policy, and `stepped` and `replay` modes quietly stop meaning anything.
-- Believing `stepped` mode makes the run deterministic enough to re-simulate bit-exactly. Replay
-  the log; do not re-run and expect the same numbers.
-- Waiting for the course to finish before starting. Track A is 8 of the 12 weeks.
+### Stato DOC (2026-09-21)
+
+- `README-simulator.md` riordinato secondo §6: indice per scopo, **A** requisiti (rete solo per
+  l'installazione), **B** setup, **C** primo volo con tre immagini reali (`docs/img/`), **D**
+  replay/batch/snapshot/`--no-ui`, poi glossario, mappa, percorso della discesa, fisica, LM,
+  superficie/punteggio, log/provenienza, **T** troubleshooting, limiti, file per file.
+- **Test di lettura in directory pulita** (eseguito): `git clone --recurse-submodules` di una copia
+  del repo (sottomodulo locale, senza rete), poi esattamente `make setup` (2 s) → `make agc` (15 s) →
+  `make test` (**296 passed** in 55 s) → `luminary fly --no-ui --tier 3 --seed 0 --policy scripted`
+  (45 s totali compresa la costruzione dello snapshot, ~10 s): risultato **identico al repo di
+  lavoro** (0.72 m/s, 816 m, 4 veti, 763 decisioni) → riproducibilità tra directory. Il percorso con
+  finestra (driver dummy) e `luminary view --screenshot` funzionano dal clone. Correzioni emerse:
+  lo snapshot costa ~10 s, non ~2 min; `VIRTUAL_ENV` ereditato da un'altra shell dà solo un avviso di
+  `uv`. Limite: "pulito" = copia dell'albero di lavoro non committato, con un submodule locale; il
+  vero `git clone` da GitHub e il download di dipendenze da PyPI non sono stati esercitati (nessuna
+  rete usata in quel test dopo `uv sync`, che è avvenuto con la cache locale).
+- Fingerprint (log di `t1_s0_scripted`): VirtualAGC `45bd7333…` pulito; yaAGC `45d1df8c…`; rope
+  `1f5326e0…`; listing `b12cdfe4…`; patch set `59fb264f…`; build in worktree di cache.
+
+---
+
+## 6. README-simulator: deliverable obbligatorio dopo il simulatore
+
+Il README non è una nota breve: è il manuale di esecuzione e lettura del progetto per una persona
+che non conosce AGC, P63, yaAGC, PIPA, socket channel o il codice esistente. Va scritto **dopo S4**,
+quando i comandi e l'architettura sono stabili; non cancellare l'attuale documento finché la nuova
+versione non sia verificata su clone pulito.
+
+`README-simulator.md` deve contenere, in quest'ordine:
+
+1. cosa fa il simulatore, cosa è realmente AGC e cosa è modellato localmente;
+2. requisiti macOS, strumenti e spazio disco; differenza tra esecuzione offline e installazione
+   iniziale delle dipendenze;
+3. setup da clone pulito, riga per riga, spiegando che cosa fa ogni comando;
+4. primo volo con `luminary fly`, significato della finestra e lettura del verdetto;
+5. replay, batch eval, snapshot e `--no-ui`;
+6. mappa del repository e percorso completo di una discesa: CLI → AGC → bridge → pianta → sensori
+   → UI/log;
+7. spiegazione semplice di AGC, Luminary, DSKY, P63, PIPA/CDU, discreti, DPS e clock stepped;
+8. descrizione della fisica, delle unità, frame, sensori e semplificazioni attive;
+9. modello LEM: fonti, processo di generazione originale, cosa è fedele e cosa è schematico;
+10. superficie, target, hazard, score e differenza tra soft touchdown e mission success;
+11. schema dei log JSONL, provenance e come riprodurre un episodio;
+12. test unitari/integration, come interpretare failure dovuti a porte sandboxate;
+13. troubleshooting pratico: build, porte, snapshot, modello assente, UI che non si apre;
+14. limiti correnti e capacità Apollo volutamente non ancora supportate.
+
+Il README deve usare diagrammi ASCII semplici, esempi di output reali e link ai file del repo. Ogni
+termine tecnico va definito alla prima occorrenza. Nessun comando implicito, nessun “ovviamente”.
+
+**Gate DOC:** una persona che parte da clone pulito riesce a buildare, eseguire, osservare, fare
+replay e capire la catena dati seguendo soltanto il README. Il test di lettura va eseguito in una
+directory pulita e le correzioni confluiscono nel documento prima di iniziare l'LLM.
+
+---
+
+## 7. Agente locale, solo dopo S4 e DOC
+
+### Interfaccia fissa
+
+Il modello riceve un brief deterministico derivato da `Observation` e restituisce solo:
+
+```json
+{
+  "action": "hold | take_manual | set_manual_target",
+  "vertical_rate_mps": -1.0,
+  "horizontal_velocity_mps": 0.0,
+  "reason": "radar and AGC altitude disagree; take manual control"
+}
+```
+
+Validazione deterministica:
+
+- enum chiuso, tipi e range fisici;
+- reason massimo 240 caratteri, solo debug/timeline;
+- `set_manual_target` rifiutato prima del takeover;
+- LLM non sceglie il TTL: scheduler assegna 3–10 s e heartbeat di 10 s;
+- evento (programma, allarme, modo, radar) risveglia subito la policy;
+- timeout/JSON invalido/backend morto → ultimo intent breve, poi `ScriptedAgent`, loggando il
+  fallback.
+
+La simulazione mette in pausa pianta e AGC mentre `decide()` attende. Il report separa
+`decision_wall_latency_s` da `sim_time_while_thinking_s`, che deve essere zero.
+
+### Fase A1 — Integrazione LLM
+
+1. backend locale con health check, timeout e nessuna rete esterna;
+2. prompt versionato, schema JSON, parser, clamp e fallback testati;
+3. provenance di modello, digest e prompt nell'header;
+4. UI mostra richiesta, applicazione, reason, latenza, veto e fallback;
+5. test di JSON malformato, timeout e modello assente.
+
+**Gate A1:** tier 1 seed 0 termina senza JSON invalido/fallback, con reason visibile e ≤120 chiamate
+modello.
+
+### Fase A2 — Primo confronto utile
+
+Sul dev set 15 episodi produrre almeno queste tabelle separate:
+
+- LLM + safety;
+- LLM senza safety;
+- scripted + safety;
+- scripted senza safety;
+- null + safety e null senza safety quando sensato.
+
+Metriche: soft touchdown, mission success/not scored, errore target, hazard/slope outcome, fuel,
+numero decisioni, wall latency, veto, fallback. Un atterraggio salvato dalla safety non è attribuito
+al solo LLM.
+
+---
+
+## 8. Lavoro futuro dopo l'agente MVP
+
+1. completare citazioni `docs/flight-contexts.md` con pagina/sezione verificata;
+2. indurre 1201/1202 attraverso carico/interruzioni reali, non un display finto;
+3. introdurre 6-DoF, RCS e guasti solo dopo test di assetto/frame;
+4. integrare MARKRUPT/P66/LPD quando esistono interrupt path, pad load e azioni verificabili;
+5. modellare ascent stage prima di dichiarare abort;
+6. congelare 60 episodi, bootstrap CI, realtime contro stepped e `make reproduce`;
+7. aggiungere reflection/memory/self-consistency solo se il benchmark mostra un difetto che possono
+   correggere.
+
+---
+
+## 9. Comandi del simulatore finito
+
+```bash
+make setup
+make agc
+uv run luminary snapshot
+uv run luminary fly --tier 3 --seed 0 --policy scripted
+uv run luminary fly --tier 3 --seed 0 --policy scripted --no-ui
+uv run luminary view results/runs/t3_s0_scripted.jsonl.gz
+uv run luminary eval --set dev --policy scripted
+```
+
+Comportamento:
+
+| Comando | Risultato |
+|---|---|
+| `luminary fly` | una finestra nativa, un log JSONL e un verdetto |
+| `luminary fly --no-ui` | run headless per test/batch |
+| `luminary view LOG` | replay nella stessa UI, senza AGC/modello/server |
+| `luminary eval` | batch senza UI e tabella da log |
+| `luminary agc build` | build AGC/rope e stampa fingerprint |
+
+---
+
+## 10. Verifica dei gate
+
+### Test automatici
+
+```bash
+uv run pytest tests/unit -q
+uv run ruff check src tests
+uv run mypy
+uv run pytest tests/integration -q
+```
+
+Gli integration test richiedono socket localhost. Se un sandbox blocca `127.0.0.1`, non trattare il
+fallimento come regressione del bridge: rieseguirli sul Mac locale prima di segnare S1/S4 come passati.
+
+### Smoke test UI
+
+1. Da clone pulito buildare AGC e snapshot.
+2. Avviare `luminary fly` senza browser.
+3. Verificare DSKY, quota/spinta, trail, LEM/griglia, target, intenti e veto.
+4. Chiudere la finestra: l'episodio e il log devono completare senza crash.
+5. Aprire il log con `luminary view`: nessun yaAGC, Ollama o server locale deve essere necessario.
+
+---
+
+## 11. Rischi e fallback
+
+| Rischio | Azione |
+|---|---|
+| UI rallenta il loop | coda latest-wins, renderer isolato, recorder indipendente |
+| Mesh LEM troppo costosa | mantenere wireframe/flat low-poly e fonti dimensionali; non ridurre a lander generico |
+| Safety salva una policy debole | risultati on/off e baseline senza rescue prima dell'LLM |
+| Patch rompe la riproducibilità | worktree/cache separato, hash e integration test |
+| Score sopravvaluta un atterraggio | separare soft touchdown e mission success |
+| Scope creep 6-DoF/LPD/abort | prima osservabile → azione → metrica → scenario |
+| AGC loop non chiude | fallback guidance Python è modalità separata, mai chiamata “vero AGC” |
+
+---
+
+## 12. Checklist di handoff
+
+Prima del gate successivo aggiornare README/artefatti con:
+
+- comando esatto, OS e risultato;
+- fingerprint AGC/rope/patch;
+- log JSONL e screenshot della finestra nativa;
+- metriche `soft_touchdown` e `mission_success` separate;
+- policy e safety mode;
+- semplificazioni attive e limiti.
+
+Se una frase non è sostenuta da log, test o fonte tecnica, etichettarla come ipotesi e non come
+risultato.

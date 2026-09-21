@@ -86,3 +86,42 @@ def test_commanded_descent_rate_changes_throttle() -> None:
     fast.set_targets(-4.0, 0.0)
     slow.set_targets(-0.5, 0.0)
     assert slow.control(s)[0] > fast.control(s)[0]
+
+
+def test_surface_is_seen_only_when_low_enough_to_see_it() -> None:
+    from luminary_agent.plant.terrain import Bump, Hazard, Surface
+    from luminary_agent.sim.observation import surface_view
+
+    s = Surface(
+        0,
+        hazards=(Hazard("crater", 100.0, 0.0, 20.0), Hazard("boulder", 900.0, 0.0, 2.0)),
+        bumps=(Bump(0.0, 60.0, 40.0, 60.0),),
+    )
+    assert surface_view(None, 0.0, 0.0, 100.0) == {}  # no surface scored
+    assert surface_view(s, -50.0, 5.0, 5_000.0) == {}  # too high to see the ground
+    mid = surface_view(s, -50.0, 5.0, 1_500.0)
+    assert mid == {"target_downrange_m": -50.0, "target_cross_m": 5.0}  # only the target
+    low = surface_view(s, -50.0, 5.0, 200.0)
+    assert low["slope_here_deg"] == s.slope_deg(-50.0, 5.0)
+    assert low["hazards_near"] == (
+        ("crater", 150.0, -5.0, 20.0),
+    )  # the far boulder is out of range
+
+
+def test_the_observation_text_names_the_target_and_terrain() -> None:
+    from luminary_agent.sim.observation import Observation
+
+    o = Observation(
+        10.0, "auto", 64, 6, 64, 1, 2, 3, (), 100.0, 110.0, -2.0, 0.5, 1000.0, 7000.0, 200.0,
+        target_downrange_m=-40.0, target_cross_m=12.0, slope_here_deg=2.5,
+        hazards_near=(("boulder", 30.0, -4.0, 2.0),),
+    )  # fmt: skip
+    text = o.to_text()
+    assert "target: -40m downrange, +12m cross" in text
+    assert "slope 2.5deg" in text and "boulder r=2m at (+30,-4)" in text
+    assert (
+        "target"
+        not in Observation(
+            10.0, "auto", 64, 6, 64, 1, 2, 3, (), None, None, 0.0, 0.0, 0.0, 7000.0, 0.0
+        ).to_text()
+    )

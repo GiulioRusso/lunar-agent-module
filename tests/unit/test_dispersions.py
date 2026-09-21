@@ -1,6 +1,6 @@
 from luminary_agent.plant.dynamics import PlanarState
 from luminary_agent.plant.propulsion import DescentEngine
-from luminary_agent.scenarios.dispersions import Dispersion, sample
+from luminary_agent.scenarios.dispersions import FAULT_WINDOW_S, Dispersion, sample
 
 
 def test_sample_is_deterministic_and_seed_dependent() -> None:
@@ -26,5 +26,19 @@ def test_apply_and_engine() -> None:
 def test_propellant_shortfall_only_reduces_and_sets_dry_mass() -> None:
     for seed in range(50):
         d = sample(seed, 3)
-        assert 0.91 <= d.propellant_scale <= 1.0
+        assert 0.84 <= d.propellant_scale <= 1.0
     assert Dispersion().dry_mass_kg == 6_800.0
+
+
+def test_the_in_flight_thrust_fault_is_tiered_bounded_and_inside_the_approach() -> None:
+    assert all(sample(seed, 1).thrust_fault_at_s == 0.0 for seed in range(50))
+    for seed in range(50):
+        for tier, worst in ((2, 0.94), (3, 0.85)):
+            d = sample(seed, tier)
+            assert FAULT_WINDOW_S[0] <= d.thrust_fault_at_s <= FAULT_WINDOW_S[1]
+            assert worst <= d.thrust_fault_scale <= 1.0
+
+
+def test_a_faulted_engine_loses_exactly_the_drawn_thrust() -> None:
+    d = Dispersion(thrust_scale=0.98, thrust_fault_scale=0.9)
+    assert abs(d.engine(faulted=True).f_max_n / d.engine().f_max_n - 0.9) < 1e-12
