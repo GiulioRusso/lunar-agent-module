@@ -1,4 +1,4 @@
-# Apollo Agent
+# Lunar Agent Module
 
 **A LangGraph flight supervisor for an Apollo Lunar Module simulation.**
 
@@ -38,8 +38,8 @@ tests. The end-to-end agent test uses controlled model responses; real local-mod
 still needs evaluation. The system's implementation and test coverage are established separately from
 any claim that an LLM is a successful lunar pilot.
 
-For a technical review, start with the [architecture walkthrough](#how-a-flight-works) and the
-[source-linked code review](CODE_REVIEW.md). To see the application, use the local launcher below.
+For a technical overview, start with [how a flight works](#how-a-flight-works).
+To see the application, use the local launcher below.
 
 ## Start here
 
@@ -49,7 +49,6 @@ For a technical review, start with the [architecture walkthrough](#how-a-flight-
 | Set up a new checkout | [First-time setup](#first-time-setup) |
 | Understand the screen and its controls | [Watch and inspect a flight](#watch-and-inspect-a-flight) |
 | Understand the agent, AGC and simulator | [How a flight works](#how-a-flight-works) |
-| Understand the design as its maintainer | [Author’s code review](CODE_REVIEW.md) |
 | Find the code to read or change | [Code guide](#code-guide) |
 | Change the model or other settings | [Configuration](#configuration) |
 | Run tests or compare policies | [Tests and evaluation](#tests-and-evaluation) |
@@ -339,7 +338,7 @@ A malformed or unavailable proposal gets one repair attempt. After failure or ca
 the graph uses an explicitly labelled fallback: scripted takeover logic in automatic mode, or the
 default descent schedule with zero horizontal targets in manual mode. A later consultation can
 recover from a transient model error. An outer worker timeout instead disables that policy for
-the rest of the episode. See the [failure contract](CODE_REVIEW.md).
+the rest of the episode. See the validation and fallback workflow above.
 
 ### What the agent can control today
 
@@ -358,12 +357,9 @@ them requires motion in the negative direction. Both horizontal axes share thrus
 The vocabulary also includes `return_auto`, `select_p66`, `adjust_rod`, `redesignate` and `abort`.
 **The current backend reports these as unsupported.** Naming a procedure does not implement its
 AGC inputs, spacecraft dynamics or success criteria. Details live in the
-[action catalog](CODE_REVIEW.md).
+[action catalog](src/luminary_agent/policies/actions.py).
 
 ## Code guide
-
-For a deeper walkthrough, read the [author’s code review](CODE_REVIEW.md). It explains state
-ownership, one complete decision, implementation tradeoffs, review findings and safe extension points.
 
 Read the application in execution order, then follow the branch you want to change.
 The links below point to the actual source files.
@@ -459,7 +455,7 @@ Useful flight options:
 Cloud backends remain available through `--provider openai` or `--provider anthropic`, with
 `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` configured locally. OpenAI-compatible endpoints can use
 `--base-url`. These send observations/history to that provider. For details, see
-[provider setup](CODE_REVIEW.md).
+[provider configuration](src/luminary_agent/policies/agent_config.py).
 
 Use `uv run luminary fly --help`, `view --help` or `eval --help` for the complete CLI reference.
 
@@ -588,15 +584,5 @@ The instrument model is explicitly `ideal_state_with_faulted_radar`: radar has s
 while velocity, mass and visible target geometry are ideal state measurements. The manual controller
 also has ideal state. A radar dropout therefore does not remove its altitude knowledge.
 
-| Read more | Covers |
-|---|---|
-| [Policy control](CODE_REVIEW.md) | Action support, authority, failure handling, instrument model and backend extension. |
-| [Architecture](CODE_REVIEW.md) | Wider system structure. |
-| [AGC](CODE_REVIEW.md) and [AGC integration](CODE_REVIEW.md) | Emulator internals, units, channels and plant/AGC interfaces. |
-| [Scenarios](CODE_REVIEW.md) and [flight contexts](CODE_REVIEW.md) | Scenario design, dispersions and flight situations. |
-| [Glossary](CODE_REVIEW.md) | Apollo and simulation terminology. |
-| [Simulator guide](CODE_REVIEW.md) | Additional simulator walkthrough. |
-| [LM model sources](CODE_REVIEW.md) | Visual asset sources and licensing. |
-
 Flight software and emulator: [Virtual AGC](https://www.ibiblio.org/apollo/).
-Lunar Module visual assets: NASA 3D Resources; see the model sources above.
+Lunar Module visual assets: [NASA / Michael D. Carbajal](https://science.nasa.gov/3d-resources/apollo-lunar-module/).

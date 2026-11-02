@@ -35,3 +35,6 @@ results/cache/
 
 # episode logs written by `luminary fly` (regenerate; not source)
 results/runs/
+
+# Personal maintainer study guide (local only)
+/CODE_REVIEW.md
