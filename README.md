@@ -2,14 +2,15 @@
 
 **A LangGraph flight supervisor for an Apollo Lunar Module simulation.**
 
-A portfolio project developed for **Ed Donner’s AI Agentic Track course**, demonstrating agent
-orchestration, validated action execution, failure recovery, observability and evaluation in a
-stateful control environment.
+An agentic AI project demonstrating orchestration, validated action execution, failure recovery,
+observability and evaluation in a stateful control environment.
 
 The original **Luminary 099** flight software runs inside an Apollo Guidance Computer (AGC)
 emulator. A Python simulator supplies the spacecraft physics. A **LangGraph agent** reads flight
 observations, decides whether to intervene, and sends validated requests to the simulator.
 A native window lets you watch the lander and inspect what the agent proposed and what happened.
+
+![Lunar Module descending under thrust in the simulator interface, alongside AGC instruments, flight plots and agent decisions](results/review/agent-flight.png)
 
 The agent acts as a supervisory pilot. The AGC supplies automatic guidance; after manual takeover,
 a deterministic controller follows the agent's velocity targets. The language model does not
