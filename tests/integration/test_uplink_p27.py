@@ -2,6 +2,14 @@
 
 Targets are erasable words 055 and 056, which agc_engine.h marks "spares" (no hardware
 behaviour attached), so a stray write cannot disturb anything the AGC is doing.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_uplink_p27.py -v`.
 """
 
 from __future__ import annotations

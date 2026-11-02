@@ -1,9 +1,14 @@
-"""Episode log: gzipped JSONL, one line per tick (APOLLO_AGENT_PLAN.md Sec.3.2).
+"""Episode log: gzipped JSONL, one line per tick (CODE_REVIEW.md Sec.3.2).
 
 Line 1 is a header describing what produced the log (scenario seed, policy, model/prompt
 hashes, git SHA, clock mode, ...); every following line is one tick. A log that cannot say
 what produced it is worthless within a week, so `Recorder` refuses to start without a
 header. Replay is playback of this file -- no AGC, no physics, no model calls.
+
+Format: JSONL = one JSON object per line; gzip = compressed (`.jsonl.gz`). Read one yourself:
+    import gzip, json
+    for line in gzip.open("results/runs/t3_s0_scripted.jsonl.gz", "rt"):
+        record = json.loads(line)   # record["type"] in {"header", "tick", "decision", "landing"}
 """
 
 from __future__ import annotations
@@ -21,11 +26,13 @@ from typing import Any, TextIO
 
 from luminary_agent.agc import build as agc_build
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 1  # bump if the line layout changes incompatibly
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Recorder:
+    """Writes one episode log. Use as `with Recorder(path, header) as rec: rec.tick(...)`."""
+
     def __init__(self, path: Path, header: dict[str, Any]) -> None:
         if not header:
             raise ValueError("an episode log needs a non-empty header")
@@ -35,14 +42,20 @@ class Recorder:
         self._write({"type": "header", "format": FORMAT_VERSION, **header})
 
     def _write(self, obj: dict[str, Any]) -> None:
+        """One compact JSON line (no spaces, to keep logs small)."""
         self._fh.write(json.dumps(obj, separators=(",", ":")) + "\n")
 
     def tick(self, record: dict[str, Any]) -> None:
+        """One simulation tick (type "tick")."""
         self._write({"type": "tick", **record})
 
     def event(self, record: dict[str, Any]) -> None:
         """An agent decision (type "decision"), interleaved with ticks in time order."""
         self._write({"type": "decision", **record})
+
+    def agent_status(self, record: dict[str, Any]) -> None:
+        """Observable workflow stage; never private model reasoning or provider raw responses."""
+        self._write({"type": "agent_status", **record})
 
     def landing(self, record: dict[str, Any]) -> None:
         """The final verdict (type "landing"): why the touchdown is or is not a mission success."""
@@ -77,6 +90,7 @@ def read_episode(path: Path) -> tuple[dict[str, Any], Iterator[dict[str, Any]]]:
         fh.close()
         raise ValueError(f"{path} does not start with a header line")
 
+    # A generator: lines are read and parsed lazily as the caller iterates.
     def ticks() -> Iterator[dict[str, Any]]:
         with fh:
             for line in fh:
@@ -87,13 +101,8 @@ def read_episode(path: Path) -> tuple[dict[str, Any], Iterator[dict[str, Any]]]:
     return header, ticks()
 
 
-def read_decisions(path: Path) -> list[dict[str, Any]]:
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        records = (json.loads(line) for line in fh)
-        return [r for r in records if r.get("type") == "decision"]
-
-
 def _sha256_file(path: Path) -> str:
+    """SHA-256 fingerprint of a file ("" if missing), read in 1 MiB chunks."""
     if not path.exists() or not path.is_file():
         return ""
     h = hashlib.sha256()
@@ -104,6 +113,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _canonical_json(value: Any) -> str:
+    """Stable JSON text (sorted keys) so equal values always hash the same."""
     if is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
@@ -117,6 +127,7 @@ def provenance(scenario: Any | None = None) -> dict[str, Any]:
     hash, so the run is attributable without pretending the submodule was immutable.
     """
 
+    # Small helpers: run a git command, return its output ("" / b"" if git is unavailable).
     def git(cwd: Path, *args: str) -> str:
         try:
             r = subprocess.run(
@@ -173,7 +184,21 @@ def provenance(scenario: Any | None = None) -> dict[str, Any]:
     }
 
 
+def evaluation_fingerprint(config: dict[str, Any]) -> str:
+    """Hash actual sources (including dirty/untracked files), dependencies and flight artifacts."""
+    paths = sorted((REPO_ROOT / "src/luminary_agent").rglob("*.py"))
+    paths += [REPO_ROOT / "pyproject.toml", REPO_ROOT / "uv.lock"]
+    paths += sorted((REPO_ROOT / "patches").glob("*.patch"))
+    paths += [agc_build.yaagc_path(), agc_build.rope_bin_path(), agc_build.listing_path()]
+    paths += [agc_build.VIRTUALAGC / "Luminary069" / "PADLOADS.agc"]
+    material = [(str(p), _sha256_file(p)) for p in paths]
+    return hashlib.sha256(
+        _canonical_json({"config": config, "files": material}).encode()
+    ).hexdigest()
+
+
 def read_landing(path: Path) -> dict[str, Any] | None:
+    """The "landing" verdict line of a log, or None if the episode did not land."""
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         for line in fh:
             record: dict[str, Any] = json.loads(line)

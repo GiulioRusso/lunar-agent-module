@@ -9,6 +9,10 @@ every point, and no choice of time can null a constant offset -- IGNALG raises a
 
 Notation: rp/ra are perilune/apolune radii from the Moon's centre, nu is true anomaly
 (0 at perilune, negative before it), r/vr/vt are radius, radial and tangential velocity.
+
+Plain words: before the descent engine fires, the LM coasts on an ellipse around the Moon whose
+lowest point (perilune, ~15 km up) is where Powered Descent Initiation (PDI) happens. This file
+is textbook two-body orbital mechanics (Kepler) used to compute that coasting state.
 """
 
 from __future__ import annotations
@@ -22,15 +26,19 @@ from luminary_agent.plant.gravity import MU_MOON, R_MOON
 
 @dataclass(frozen=True)
 class DescentOrbit:
-    rp_m: float
-    ra_m: float
+    """An ellipse around the Moon, given by its lowest and highest radius (from the centre)."""
+
+    rp_m: float  # perilune radius
+    ra_m: float  # apolune radius
 
     @property
     def a_m(self) -> float:
+        """Semi-major axis (average of the two extreme radii)."""
         return 0.5 * (self.rp_m + self.ra_m)
 
     @property
     def e(self) -> float:
+        """Eccentricity: 0 = circle, closer to 1 = more elongated."""
         return (self.ra_m - self.rp_m) / (self.ra_m + self.rp_m)
 
     @property
@@ -40,9 +48,11 @@ class DescentOrbit:
 
     @property
     def perilune_speed_ms(self) -> float:
+        """Speed at the lowest point (fastest point of the orbit)."""
         return self.h_m2s / self.rp_m
 
     def radius_at(self, nu: float) -> float:
+        """Distance from the Moon's centre at true anomaly nu (the orbit equation)."""
         return self.a_m * (1.0 - self.e**2) / (1.0 + self.e * math.cos(nu))
 
     def velocity_at(self, nu: float) -> tuple[float, float]:
@@ -53,12 +63,13 @@ class DescentOrbit:
 
     def time_to_perilune_s(self, nu: float) -> float:
         """Seconds until perilune from true anomaly nu (negative nu -> positive time)."""
+        # Kepler's equation: true anomaly -> eccentric anomaly -> mean anomaly -> time.
         e = self.e
         ecc_anom = 2.0 * math.atan2(
             math.sqrt(1.0 - e) * math.sin(nu / 2.0), math.sqrt(1.0 + e) * math.cos(nu / 2.0)
         )
         mean_anom = ecc_anom - e * math.sin(ecc_anom)
-        n = math.sqrt(MU_MOON / self.a_m**3)
+        n = math.sqrt(MU_MOON / self.a_m**3)  # mean motion, rad/s
         return -mean_anom / n
 
     def state_at(self, nu: float, mass_kg: float) -> PlanarState:

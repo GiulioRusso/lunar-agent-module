@@ -1,4 +1,4 @@
-"""The entry point (APOLLO_AGENT_PLAN.md Phase V). One command, five verbs.
+"""The entry point (CODE_REVIEW.md Phase V). One command, five verbs.
 
     luminary fly      [--tier 3 --seed 0 --policy scripted]   one descent, in a native window
     luminary view     <episode.jsonl.gz>                      replay a recorded one
@@ -10,6 +10,11 @@
 shows it live in a pygame window (no browser, no server); `--no-ui` runs it without one. `view`
 plays a recorded log offline: no AGC, no emulator, no network. `python -m luminary_agent ...` and
 `luminary ...` are the same thing.
+
+How the command exists: pyproject.toml's [project.scripts] says `luminary =
+"luminary_agent.__main__:main"`, so `uv sync` installs a `luminary` executable into .venv that
+calls main() below. `uv run luminary ...` runs it inside the project's virtual environment.
+Each verb is a subparser (argparse) whose `func` default points at the cmd_* function to run.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from luminary_agent.sim.snapshot import ensure_snapshot
 from luminary_agent.viz.live import BACKLOG, LiveFeed, LiveReader
 from luminary_agent.viz.replay import load_episode, title
 
-RUNS = Path("results/runs")
+RUNS = Path("results/runs")  # default output folder for `fly` (relative to the current dir)
 
 
 def _fly_child(kwargs: dict[str, Any], frames: Any, results: Any) -> None:
@@ -54,6 +59,7 @@ def _fly_child(kwargs: dict[str, Any], frames: Any, results: Any) -> None:
 
 
 def cmd_fly(a: argparse.Namespace) -> None:
+    """`luminary fly`: one episode, optionally with a live window; prints the verdict."""
     out = a.out or RUNS
     stem = out / f"t{a.tier}_s{a.seed}_{a.policy}"
     log = stem.with_suffix(".jsonl.gz")
@@ -63,10 +69,14 @@ def cmd_fly(a: argparse.Namespace) -> None:
         "safety": not a.no_safety, "surface_on": not a.no_surface,
     }  # fmt: skip
     if a.no_ui:
+        # No window: run the episode right here (asyncio.run starts the event loop).
         result = asyncio.run(run_episode(**kwargs))
     else:
         from luminary_agent.viz.native_app import run_live  # pygame only when a window is wanted
 
+        # Two processes: a child flies the descent, this one runs the window. They talk through
+        # two queues: `frames` (child -> window, view frames) and `results` (the final result).
+        # "spawn" = start the child as a fresh Python interpreter (portable, macOS-safe).
         ctx = multiprocessing.get_context("spawn")
         frames, results = ctx.Queue(BACKLOG), ctx.Queue()
         child = ctx.Process(
@@ -83,7 +93,7 @@ def cmd_fly(a: argparse.Namespace) -> None:
         child.start()
         header = {"policy": a.policy, "tier": a.tier, "seed": a.seed}
         surface = None if a.no_surface else Surface.sample(a.seed)
-        run_live(LiveReader(frames, title(header)), log, surface)
+        run_live(LiveReader(frames, title(header)), log, surface)  # blocks until window closes
         if child.is_alive():
             print("window closed; the episode keeps running")
         child.join()
@@ -113,38 +123,50 @@ def cmd_fly(a: argparse.Namespace) -> None:
             f"speed {p['speed_x_real_time']}x real time ({p['sim_s']} s flown in {p['wall_s']} s)"
             f" · {p['sections_s']} · unattributed {p['unattributed_s']} s"
         )
-    stem.with_suffix(".json").write_text(json.dumps(result))
+    stem.with_suffix(".json").write_text(json.dumps(result))  # the result next to the log
     print(log)
 
 
 def cmd_view(a: argparse.Namespace) -> None:
+    """`luminary view LOG`: replay a recorded episode, or save one frame as PNG."""
     from luminary_agent.viz import native_app
 
     episode = load_episode(a.episode, a.hz)
     if a.screenshot:
-        native_app.screenshot(episode, a.at, a.screenshot, a.camera)
+        native_app.screenshot(episode, a.at, a.screenshot, a.camera, inspect=a.inspect)
         print(a.screenshot)
     else:
         native_app.run_replay(episode)
 
 
 def cmd_eval(a: argparse.Namespace) -> None:
+    """`luminary eval`: a named set, or the cross product of --tiers x --seeds, in parallel."""
     jobs = list(SETS[a.set]) if a.set else [(t, s) for t in a.tiers for s in a.seeds]
     out = a.out or Path("results/logs") / (a.set or "batch")
     asyncio.run(run_set.main(jobs, a.workers, out, a.policy, a.port, safety=not a.no_safety))
 
 
 def cmd_agc(a: argparse.Namespace) -> None:
+    """`luminary agc build`: same as `make agc`."""
     agc_build.main()
 
 
 def cmd_snapshot(a: argparse.Namespace) -> None:
+    """`luminary snapshot [--refresh]`: build (or rebuild) the pre-ignition AGC cache."""
     sym = load_symbols(listing_path())
     path = asyncio.run(ensure_snapshot(RUNS / "snapshot_build", a.port, sym, refresh=a.refresh))
     print(path)
 
 
+def agent_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--provider", choices=("openai", "anthropic", "ollama"))
+    parser.add_argument("--model", help="model identifier for --policy llm")
+    parser.add_argument("--base-url", help="optional model endpoint")
+    parser.add_argument("--max-model-calls", type=int, help="per-episode model-call limit")
+
+
 def parser() -> argparse.ArgumentParser:
+    """All verbs and their options (this is what `luminary <verb> --help` prints)."""
     ap = argparse.ArgumentParser(prog="luminary", description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -157,6 +179,7 @@ def parser() -> argparse.ArgumentParser:
     f.add_argument("--no-safety", action="store_true", help="ablation: no safety monitor")
     f.add_argument("--out", type=Path, help=f"default: {RUNS}")
     f.add_argument("--port", type=int, default=19797)
+    agent_options(f)
     f.set_defaults(func=cmd_fly)
 
     v = sub.add_parser("view", help="replay a recorded episode in a native window")
@@ -165,6 +188,7 @@ def parser() -> argparse.ArgumentParser:
     v.add_argument("--screenshot", type=Path, help="write one PNG instead of opening a window")
     v.add_argument("--at", type=float, default=1e9, help="simulated time of the screenshot, s")
     v.add_argument("--camera", type=int, default=1, choices=(1, 2, 3))
+    v.add_argument("--inspect", action="store_true", help="include agent inspector in screenshot")
     v.set_defaults(func=cmd_view)
 
     e = sub.add_parser("eval", help="run a set of episodes in parallel")
@@ -176,6 +200,7 @@ def parser() -> argparse.ArgumentParser:
     e.add_argument("--no-safety", action="store_true")
     e.add_argument("--out", type=Path)
     e.add_argument("--port", type=int, default=20100, help="base; each episode takes 10 ports")
+    agent_options(e)
     e.set_defaults(func=cmd_eval)
 
     g = sub.add_parser("agc", help="build the emulator and assemble the rope")
@@ -190,8 +215,26 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    a = parser().parse_args()
-    a.func(a)
+    cli = parser()
+    a = cli.parse_args()  # reads sys.argv
+    import os
+
+    for option, env in (
+        ("provider", "LUMINARY_PROVIDER"),
+        ("model", "LUMINARY_MODEL"),
+        ("base_url", "LUMINARY_BASE_URL"),
+        ("max_model_calls", "LUMINARY_MAX_CALLS"),
+    ):
+        if getattr(a, option, None) is not None:
+            os.environ[env] = str(getattr(a, option))
+    if getattr(a, "policy", None) == "llm":
+        from luminary_agent.policies.agent_config import AgentConfig
+
+        try:
+            AgentConfig.from_env().check_credentials()
+        except ValueError as exc:
+            cli.error(str(exc))
+    a.func(a)  # dispatch to cmd_fly / cmd_view / ...
 
 
 if __name__ == "__main__":

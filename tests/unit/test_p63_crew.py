@@ -1,3 +1,9 @@
+"""Unit tests for sim/p63_crew.py:wait_for_display with a scripted fake AGC: every `step`
+advances a FakeDsky to the next (verb, noun) in its script, so no emulator is needed.
+
+Run alone: `uv run pytest tests/unit/test_p63_crew.py -v`.
+"""
+
 import asyncio
 from typing import Any
 

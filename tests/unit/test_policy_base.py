@@ -1,3 +1,8 @@
+"""Unit test for policies/base.py: `hold` is an ordinary, loggable Intent.
+
+Run alone: `uv run pytest tests/unit/test_policy_base.py -v`.
+"""
+
 from luminary_agent.policies.base import hold
 
 

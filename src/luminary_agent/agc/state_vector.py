@@ -8,6 +8,9 @@ in ones' complement. Nothing here writes memory directly; the words go in throug
 
 Scales on the lunar sphere (ORBITAL_INTEGRATION.agc): position metres B-27, velocity
 metres/centisecond B-5, time centiseconds B-28.
+
+"State vector" = position + velocity + the time they are valid at. It is the AGC's knowledge of
+where the spacecraft is; navigation keeps it updated from the accelerometers during the descent.
 """
 
 from __future__ import annotations
@@ -18,21 +21,24 @@ from luminary_agent.agc.scaling import dp_from_value, dp_to_value
 from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.agc.uplink import Updater
 
-UPSVFLAG_LM_MOON = 0o77775
+UPSVFLAG_LM_MOON = 0o77775  # -2 in ones' complement: LM, lunar sphere
 UPSVFLAG_CSM_MOON = 0o00002  # positive = CSM; |2| = lunar sphere
 POSITION_B = 27
 VELOCITY_B = 5
 TIME_B = 28
-SV_WORDS = 15
+SV_WORDS = 15  # 1 flag + 6 position + 6 velocity + 2 time
 
 
 @dataclass(frozen=True)
 class StateVector:
+    """Position, velocity and time in SI-ish units (the AGC uses centiseconds for time)."""
+
     r_m: tuple[float, float, float]  # inertial position, metres
     v_ms: tuple[float, float, float]  # inertial velocity, metres/second
     t_cs: float  # time, centiseconds on the AGC clock
 
     def words(self, flag: int = UPSVFLAG_LM_MOON) -> list[int]:
+        """The 15 words P27 expects, in order: flag, rx ry rz, vx vy vz, t (2 words each)."""
         out = [flag]
         for r in self.r_m:
             out += dp_from_value(r, POSITION_B)
@@ -52,6 +58,7 @@ class StateVector:
 
 
 async def load_lm_state_vector(updater: Updater, symbols: SymbolTable, sv: StateVector) -> None:
+    """Tell the AGC where the LM is (one V71 load into the UPSVFLAG staging buffer)."""
     await updater.v71(symbols.ecadr("UPSVFLAG"), sv.words(UPSVFLAG_LM_MOON))
 
 

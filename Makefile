@@ -13,11 +13,11 @@ agc:
 	uv run python -m luminary_agent.agc.build
 
 test:
-	uv run pytest
+	uv run --extra agent pytest
 
 lint:
 	uv run ruff check .
-	uv run mypy
+	uv run --extra agent mypy
 
 fly:  # one descent in a native window: make fly TIER=3 SEED=0 POLICY=scripted  (add UI=--no-ui to skip it)
 	uv run luminary fly --tier $(TIER) --seed $(SEED) --policy $(POLICY) $(UI)

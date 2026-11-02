@@ -11,12 +11,18 @@ value but an IncType selecting the operation:
                              yaAGC's internal FIFO to model real CDU bandwidth limits)
 ChannelInput masks the register back down with `Counter &= 0x7f` before dispatching, so
 the 0x80 bit is purely a marker, not part of the register number.
+
+Plain words: the real LM's accelerometers (PIPAs) and gimbal-angle resolvers (CDUs) did not send
+numbers; they sent *pulses*, each one nudging a counter register inside the AGC by +1 or -1.
+One PIPA pulse = a fixed velocity change; one CDU pulse = a fixed angle change. To tell the AGC
+"the LM gained 5 pulses of velocity along X" we send 5 packets, each "PINC on PIPAX".
 """
 
 from __future__ import annotations
 
 from luminary_agent.agc.channels import encode_packet
 
+# Counter register addresses (octal) inside the AGC.
 REG_CDUX = 0o32
 REG_CDUY = 0o33
 REG_CDUZ = 0o34
@@ -24,6 +30,7 @@ REG_PIPAX = 0o37
 REG_PIPAY = 0o40
 REG_PIPAZ = 0o41
 
+# Increment types (the packet's "value" field when it is a counter increment).
 PINC = 0
 PCDU = 1
 MINC = 2
@@ -34,7 +41,7 @@ MCDU = 3
 PCDU_FAST = 0o21
 MCDU_FAST = 0o23
 
-COUNTER_CHANNEL_BIT = 0x80
+COUNTER_CHANNEL_BIT = 0x80  # marks a packet as "increment a counter", not "write a channel"
 
 
 def counter_increment_packet(register: int, inc_type: int) -> bytes:
@@ -51,10 +58,12 @@ def counter_increment_packets(
 
 
 def pipa_pulse_packets(register: int, pulse_count: int) -> list[bytes]:
+    """Packets for `pulse_count` accelerometer pulses (negative count = negative pulses)."""
     return counter_increment_packets(register, pulse_count, PINC, MINC)
 
 
 def cdu_pulse_packets(register: int, pulse_count: int, fast: bool = False) -> list[bytes]:
+    """Packets for `pulse_count` gimbal-angle pulses (see PCDU_FAST for `fast`)."""
     if fast:
         return counter_increment_packets(register, pulse_count, PCDU_FAST, MCDU_FAST)
     return counter_increment_packets(register, pulse_count, PCDU, MCDU)

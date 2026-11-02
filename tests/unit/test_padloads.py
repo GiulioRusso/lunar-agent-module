@@ -1,3 +1,10 @@
+"""Unit tests for agc/padloads.py (parsing the pad-load catalogue), first on a small inline
+SAMPLE, then (TestRealCatalogue) on the real file in the submodule -- skipped via
+`pytest.mark.skipif` if the submodule is not checked out.
+
+Run alone: `uv run pytest tests/unit/test_padloads.py -v`.
+"""
+
 import math
 
 import pytest

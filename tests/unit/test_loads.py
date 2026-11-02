@@ -1,3 +1,10 @@
+"""Unit tests for agc/loads.py:plan_loads, which groups {address: word} into P27 V71 blocks and
+V72 scatter batches. `_covered` flattens a plan back to {address: word} to check nothing is
+lost or duplicated.
+
+Run alone: `uv run pytest tests/unit/test_loads.py -v`.
+"""
+
 from luminary_agent.agc.loads import MIN_RUN, LoadPlan, plan_loads
 from luminary_agent.agc.uplink import MAX_V71_WORDS, MAX_V72_PAIRS
 

@@ -1,3 +1,9 @@
+"""Unit tests for agc/symbols.py on a SAMPLE copied from a real assembler listing (plus, if
+`make agc` has been run, the full real listing).
+
+Run alone: `uv run pytest tests/unit/test_symbols.py -v`.
+"""
+
 import pytest
 
 from luminary_agent.agc.build import listing_path

@@ -1,3 +1,9 @@
+"""Unit tests for agc/actuators.py: decoding the AGC's jet, engine on/off and throttle-strobe
+channel words into ActuatorState. Pure Python, no emulator needed.
+
+Run alone: `uv run pytest tests/unit/test_actuators.py -v`.
+"""
+
 from luminary_agent.agc.actuators import CH_14, CH_DSALMOUT, CH_PYJETS, CH_ROLLJETS, ActuatorState
 
 

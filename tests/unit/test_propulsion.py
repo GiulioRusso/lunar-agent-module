@@ -1,3 +1,9 @@
+"""Unit tests for plant/propulsion.py: the DPS throttle law (off / clamp-up / variable / detent)
+and thrust -> mass flow.
+
+Run alone: `uv run pytest tests/unit/test_propulsion.py -v`.
+"""
+
 import math
 
 import pytest

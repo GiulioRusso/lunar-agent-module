@@ -1,4 +1,10 @@
-"""The native window, headless: SDL's dummy video driver, no display needed."""
+"""The native window, headless: SDL's dummy video driver, no display needed.
+
+`frames()` builds a short synthetic descent; `lit()` counts non-background pixels to check that
+something was drawn in a region. Rendering goes to an off-screen pygame.Surface.
+
+Run alone: `uv run pytest tests/unit/test_native.py -v`.
+"""
 
 from pathlib import Path
 

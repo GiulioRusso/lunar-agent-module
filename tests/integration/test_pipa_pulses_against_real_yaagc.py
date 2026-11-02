@@ -3,6 +3,14 @@ snapshot, that the PIPAX register (erasable 037) actually incremented -- proof t
 plant->AGC IMU wiring works end to end, independent of any Luminary guidance sequence.
 
 Stepped mode: the pause boundary is also the I/O boundary, so send, step, then snapshot.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_pipa_pulses_against_real_yaagc.py -v`.
 """
 
 from __future__ import annotations

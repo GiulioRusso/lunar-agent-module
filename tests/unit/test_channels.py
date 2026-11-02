@@ -1,3 +1,9 @@
+"""Unit tests for agc/channels.py, the 4-byte yaAGC packet format.
+`@pytest.mark.parametrize` runs the same test once per tuple in its list.
+
+Run alone: `uv run pytest tests/unit/test_channels.py -v`.
+"""
+
 import pytest
 
 from luminary_agent.agc.channels import decode_packet, encode_packet

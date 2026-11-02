@@ -14,8 +14,11 @@ RLS       landing-site vector, **Moon-fixed**, metres B-27 (settled from P57's V
           (orbital elements BSUBO/FSUBO/NODIO/SINI... plus time since epoch), which is nowhere
           near identity. An earlier version of this docstring claimed it was identity to ~2
           mrad; that was wrong, and it is why IGNALG diverged. A consistent RLS needs that
-          matrix -- see APOLLO_AGENT_PLAN.md, Gate 1 ledger, "lunar orientation".
+          matrix -- see CODE_REVIEW.md, Gate 1 ledger, "lunar orientation".
 TLAND     nominal time of landing, AGC-clock centiseconds B-28 (double precision).
+
+Each *_words() function below turns Python floats into the list of 15-bit AGC words that a P27
+load (uplink.py) types into memory. "B-27" etc.: see scaling.py.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from luminary_agent.agc.scaling import dp_from_value
 from luminary_agent.agc.symbols import SymbolTable
 from luminary_agent.agc.uplink import Updater
 
+# B-scales (powers of two) each quantity is stored with.
 REFSMMAT_B = 1
 RLS_B = 27
 TLAND_B = 28
@@ -41,6 +45,7 @@ REFSMBIT_MASK = 1 << 12
 
 
 def refsmmat_words(matrix: Sequence[Sequence[float]]) -> list[int]:
+    """3x3 matrix -> 18 words (9 elements x 2 words each, row by row)."""
     words: list[int] = []
     for row in matrix:
         for element in row:
@@ -49,6 +54,7 @@ def refsmmat_words(matrix: Sequence[Sequence[float]]) -> list[int]:
 
 
 def rls_words(site_m: Sequence[float]) -> list[int]:
+    """Landing-site vector (metres, Moon-fixed) -> 6 words."""
     words: list[int] = []
     for component in site_m:
         words += dp_from_value(component, RLS_B)
@@ -56,6 +62,7 @@ def rls_words(site_m: Sequence[float]) -> list[int]:
 
 
 def tland_words(t_cs: float) -> list[int]:
+    """Landing time (AGC centiseconds) -> 2 words."""
     return list(dp_from_value(t_cs, TLAND_B))
 
 
@@ -64,5 +71,6 @@ async def set_flag_bit(
 ) -> None:
     """OR a flag bit into a flag word via P27 without disturbing the other flags."""
     ecadr = symbols.ecadr(word_name)
-    current = (await agc.coredump()).ecadr_words(ecadr, 1)[0]
+    current = (await agc.coredump()).ecadr_words(ecadr, 1)[0]  # read ...
+    # ... modify (OR sets just our bit) and write back through V72.
     await updater.v72([(ecadr, current | mask)])

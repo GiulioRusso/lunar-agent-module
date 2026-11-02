@@ -1,3 +1,10 @@
+"""Unit tests for agc/coredump.py: word decoding, file parsing, and the background poller.
+`tmp_path` is a pytest fixture: a fresh temporary directory per test, deleted afterwards.
+`_write_dump` fabricates a core-dump file in yaAGC's format so no emulator is needed.
+
+Run alone: `uv run pytest tests/unit/test_coredump.py -v`.
+"""
+
 import asyncio
 from pathlib import Path
 

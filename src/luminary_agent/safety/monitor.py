@@ -1,7 +1,7 @@
 """Deterministic flight-envelope monitor with veto power over the policy (Phase 4, item 4).
 
-It runs every tick, outside the model, on the same `Observation` the agent gets -- never on the
-plant's truth, so what it can see is defensible in a result. When the vehicle leaves the envelope
+It runs every tick on the same Observation the policy gets, including ideal-state instruments.
+When the vehicle leaves the envelope
 it overrides whatever the policy last commanded; the agent cannot disable it, and the number of
 vetoes per episode is a headline metric, not a footnote.
 
@@ -20,6 +20,10 @@ safety measure):
 The response is always the minimum that restores the envelope: take manual control if Luminary
 still has it, then command a safe rate. A veto is re-applied only when its reason changes or it
 has been standing for `REPEAT_S`, so a persistent violation is one decision, not fifty a second.
+
+Hysteresis (used below): once a rule has fired, it only clears when the vehicle is comfortably
+inside the limit (CLEAR_MARGIN), not the instant it crosses back -- like a thermostat that turns
+on at 19 and off at 21 degrees, to avoid flicking on and off around one threshold.
 """
 
 from __future__ import annotations
@@ -53,6 +57,8 @@ def max_descent_rate_ms(h_m: float) -> float:
 
 @dataclass
 class Veto:
+    """One override: when, why, and the Intent the executor applies instead of the policy's."""
+
     t_s: float
     reason: str
     intent: Intent
@@ -61,10 +67,17 @@ class Veto:
 
 @dataclass
 class SafetyMonitor:
+    """Stateful monitor for one episode; descent.py calls check(obs) every tick."""
+
     vetoes: list[Veto] = field(default_factory=list)
     _rule: str | None = None  # which rule is standing, NOT its message: the message carries live
     _last_s: float = float("-inf")  # numbers, so comparing messages never dedupes anything
     _commanded: bool = False
+
+    @property
+    def active(self) -> bool:
+        """Authority remains latched even when a repeated log entry is suppressed."""
+        return self._rule is not None
 
     def altitude(self, obs: Observation) -> float | None:
         """What the monitor believes the altitude is: the radar, or the AGC when there is no lock.
@@ -84,6 +97,7 @@ class SafetyMonitor:
         if h is None:
             return None
         standing = self._rule
+        # Rule 1: arrestable descent rate (tighter limit to *clear* a standing violation).
         slack = CLEAR_MARGIN if standing == "descent_rate" else 1.0
         limit = max_descent_rate_ms(h) * slack
         if -obs.vertical_ms > limit:
@@ -91,17 +105,22 @@ class SafetyMonitor:
                 "descent_rate",
                 f"descent {-obs.vertical_ms:.1f} m/s exceeds {limit:.1f} m/s at {h:.0f} m",
             )
+        # Rule 2: horizontal speed near the ground.
         near, fast = NEAR_GROUND_M, MAX_NEAR_GROUND_HORIZONTAL_MS
         if standing == "horizontal":
             near, fast = near / CLEAR_MARGIN, fast * CLEAR_MARGIN
-        if h <= near and abs(obs.horizontal_ms) > fast:
-            return "horizontal", f"horizontal {obs.horizontal_ms:+.1f} m/s at {h:.0f} m"
+        horizontal = math.hypot(obs.horizontal_ms, obs.cross_velocity_ms)
+        if h <= near and horizontal > fast:
+            return "horizontal", f"horizontal {horizontal:.1f} m/s at {h:.0f} m"
         return None
 
     def check(self, obs: Observation) -> Veto | None:
         """The veto to apply this tick, or None. Called every tick, before the policy's intent
         stands."""
         found = self.violation(obs)
+        if self.altitude(obs) is None and self.active:
+            # Losing both altitude sources is not evidence that the envelope recovered.
+            found = (self._rule or "unknown", "altitude unavailable: retain safety control")
         if found is None:
             self._rule = None
             if self._commanded:
@@ -117,8 +136,9 @@ class SafetyMonitor:
             return None
         rule, message = found
         if rule == self._rule and obs.t_s - self._last_s < REPEAT_S:
-            return None
+            return None  # same violation, already acted on recently
         self._rule, self._last_s = rule, obs.t_s
+        # Step 1: get control away from Luminary; step 2 (next veto): command a safe rate.
         if obs.mode == "auto":
             intent = take_manual(obs.t_s + REPEAT_S)
         else:

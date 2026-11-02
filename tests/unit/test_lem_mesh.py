@@ -1,3 +1,9 @@
+"""Unit tests for the shipped LM mesh (lem/mesh.py, lem/preview.py): shape, size, and silhouettes
+compared with the reference measurements in docs/lem-glb-reference.json.
+
+Run alone: `uv run pytest tests/unit/test_lem_mesh.py -v`.
+"""
+
 import json
 from pathlib import Path
 

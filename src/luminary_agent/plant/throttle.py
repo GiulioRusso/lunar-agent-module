@@ -12,6 +12,9 @@ limit, and thrust is clamped between the minimum firing throttle and the fixed u
 ZOOMTIME seconds after ignition before throttling up); OFF drops thrust to zero. Behaviour in the
 60%-92.5% unstable band is not modelled: the flight software avoids commanding it (LOWCRIT/
 HIGHCRIT), and a slewing throttle only crosses it transiently.
+
+Example: the AGC says "+320 counts". The throttle cannot jump; it moves at most 3200 counts/s,
+so over the next 0.1 s it ramps up by 320 counts (~4 kN) and the pending command reaches 0.
 """
 
 from __future__ import annotations
@@ -26,17 +29,20 @@ from luminary_agent.plant.propulsion import (
 )
 
 SLEW_COUNTS_PER_S = 32 * 100  # FRATE: 32 counts per centisecond
-MIN_COUNTS = THROTTLE_MIN * F_MAX_N / THRUST_N_PER_COUNT
+MIN_COUNTS = THROTTLE_MIN * F_MAX_N / THRUST_N_PER_COUNT  # 10% thrust, in counts
 MAX_COUNTS = FMAX_DETENT_N / THRUST_N_PER_COUNT
 
 
 @dataclass
 class ThrottleActuator:
+    """The engine's throttle valve as a rate-limited integrator of the AGC's increments."""
+
     counts: float = 0.0  # present thrust, in AGC counts
     pending: float = 0.0  # commanded change not yet slewed in
     engine_on: bool = False
 
     def set_engine(self, on: bool) -> None:
+        """Engine ON/OFF relay (from actuators.ActuatorState.engine_on)."""
         if on and not self.engine_on:
             self.counts = MIN_COUNTS
             self.pending = 0.0
@@ -51,10 +57,11 @@ class ThrottleActuator:
             self.pending += increment_counts
 
     def step(self, dt_s: float) -> None:
+        """Advance the throttle by dt_s: move toward the pending command at the slew rate."""
         if not self.engine_on or self.pending == 0.0:
             return
         limit = SLEW_COUNTS_PER_S * dt_s
-        move = max(-limit, min(limit, self.pending))
+        move = max(-limit, min(limit, self.pending))  # clamp to [-limit, +limit]
         self.counts += move
         self.pending -= move
         if self.counts >= MAX_COUNTS or self.counts <= MIN_COUNTS:
@@ -63,6 +70,7 @@ class ThrottleActuator:
 
     @property
     def thrust_n(self) -> float:
+        """Present thrust in newtons."""
         return self.counts * THRUST_N_PER_COUNT
 
     @property

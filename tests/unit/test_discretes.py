@@ -1,3 +1,9 @@
+"""Unit tests for plant/discretes.py. Remember the inverted logic: a *present* signal is a
+*cleared* (0) bit, so `& (1 << n) == 0` means "bit n+1 is asserted".
+
+Run alone: `uv run pytest tests/unit/test_discretes.py -v`.
+"""
+
 from luminary_agent.plant.discretes import ALL_ABSENT, Discretes
 
 

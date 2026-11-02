@@ -1,3 +1,9 @@
+"""Unit tests for agc/scaling.py (AGC fixed-point single/double precision and B-scaling).
+GOLDEN holds (value, scale, words) triples that the real assembler produced: the ground truth.
+
+Run alone: `uv run pytest tests/unit/test_scaling.py -v`.
+"""
+
 import math
 
 import pytest

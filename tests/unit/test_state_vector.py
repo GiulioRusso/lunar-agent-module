@@ -1,3 +1,9 @@
+"""Unit tests for agc/state_vector.py: the 15-word P27 layout, the LM/Moon flag, units
+(velocity stored per centisecond) and an encode/decode round trip.
+
+Run alone: `uv run pytest tests/unit/test_state_vector.py -v`.
+"""
+
 import math
 
 from luminary_agent.agc.scaling import dp_encode

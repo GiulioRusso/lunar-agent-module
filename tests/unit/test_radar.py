@@ -1,3 +1,8 @@
+"""Unit tests for plant/radar.py and the radar part of scenarios/dispersions.py.
+
+Run alone: `uv run pytest tests/unit/test_radar.py -v`.
+"""
+
 from luminary_agent.plant.radar import Radar
 from luminary_agent.scenarios.dispersions import sample
 

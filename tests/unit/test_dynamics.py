@@ -1,5 +1,9 @@
-"""Analytic constant-acceleration checks, per APOLLO_AGENT_PLAN.md Phase 1's instruction
+"""Analytic constant-acceleration checks, per CODE_REVIEW.md Phase 1's instruction
 to validate the plant against closed-form cases before it's ever wired to the AGC.
+
+Tests plant/dynamics.py and plant/gravity.py against physics with known answers.
+
+Run alone: `uv run pytest tests/unit/test_dynamics.py -v`.
 """
 
 import math

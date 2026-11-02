@@ -1,9 +1,12 @@
-"""Landing judgement. Two separate questions (APOLLO_AGENT_PLAN.md Sec.1.4):
+"""Landing judgement. Two separate questions (CODE_REVIEW.md Sec.1.4):
 
 `soft_touchdown`  contact, vertical <= 3.0 m/s, horizontal <= 1.2 m/s (relative to the surface),
                   propellant left.
 `mission_success` soft touchdown AND within 100 m of the target AND hazard-free AND slope <= limit.
                   Needs a `Surface`; without one it is "not_scored", never a guess.
+
+Why two? A gentle landing in a crater is soft but not a success; a landing on target at 5 m/s
+is on target but not soft. Keeping them apart shows *which* part a policy gets wrong.
 """
 
 from __future__ import annotations
@@ -18,11 +21,13 @@ from luminary_agent.sim.descent import DescentResult
 
 MAX_VERTICAL_MS = 3.0
 MAX_HORIZONTAL_MS = 1.2
-MissionSuccess = bool | Literal["not_scored"]
+MissionSuccess = bool | Literal["not_scored"]  # True, False, or the string "not_scored"
 
 
 @dataclass(frozen=True)
 class Score:
+    """The verdict of one episode (written to the result JSON and the log's last line)."""
+
     landed: bool
     soft_touchdown: bool
     mission_success: MissionSuccess
@@ -46,8 +51,10 @@ def score(
     dry_mass_kg: float = NOMINAL_DRY_MASS_KG,
     surface: Surface | None = None,
 ) -> Score:
+    """Judge a finished descent (see the module docstring for the two criteria)."""
     landed = result.outcome == "touchdown"
-    v, hz = abs(result.vertical_ms), abs(result.horizontal_relative_ms)
+    v = abs(result.vertical_ms)
+    hz = math.hypot(result.horizontal_relative_ms, result.lateral_velocity_ms)
     fuel_kg = max(0.0, result.state.mass_kg - dry_mass_kg)
     x_m, z_m = result.downrange_error_m, result.lateral_m
     target_error_m = math.hypot(x_m, z_m)

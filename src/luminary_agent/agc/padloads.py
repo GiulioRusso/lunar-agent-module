@@ -14,6 +14,10 @@ CAVEAT, kept deliberately loud: this is **Luminary 69** -- Apollo 10's flight so
 guidance family is the same as Luminary 99's (Apollo 11) but the *values* are Apollo 10's
 sample loads. Using them gives a consistent nominal scenario; it is not "Apollo 11's pad
 load" and must never be described as one.
+
+"Pad loads" = mission constants typed into the AGC's erasable memory on the launch pad
+(throttle limits, guidance targets, gains...). The catalogue exists only as comments in an .agc
+source file, so we parse it with regular expressions (`re`).
 """
 
 from __future__ import annotations
@@ -27,6 +31,10 @@ from luminary_agent.agc.scaling import dp_from_value, sp_from_value
 
 PADLOADS_PATH = VIRTUALAGC / "Luminary069" / "PADLOADS.agc"
 
+# Regular expressions for the three kinds of text we pick out of a catalogue line:
+#   _HEADER: "# NAME (2D) P(I) description"   -> name, length, kind, description
+#   _VALUE:  "#  +0  2DEC*  +2.9 E+ 3 B-24 *" -> directive (2DEC, OCT, ...) and the rest
+#   _NUMBER/_EXP/_SCALE: the mantissa, the "E<n>" power of ten, the "B<n>" power of two
 _HEADER = re.compile(r"^#\s+(\S+)\s+\((\d+)D\)\s+(\S+)\s+(.*)$")
 _VALUE = re.compile(r"^#\s+(?:\+(\d+)\s+)?(?P<dir>1OCT|OCT|1DEC|DEC|2DEC\*?|6DEC)\b(?P<rest>.*)$")
 _NUMBER = re.compile(r"[+-]?\s*(?:\d+\.?\d*|\.\d+)")
@@ -36,6 +44,8 @@ _SCALE = re.compile(r"\bB\s*([+-]?\s*\d+)")
 
 @dataclass(frozen=True)
 class PadLoad:
+    """One catalogue entry, already encoded as AGC words."""
+
     name: str
     length: int  # words, as declared in the header
     kind: str  # e.g. "P(I)" pad-loaded invariant, "P(U)" uplinked
@@ -44,14 +54,17 @@ class PadLoad:
 
     @property
     def is_landing(self) -> bool:
+        """True for entries the catalogue marks as used by the lunar landing."""
         return "LUNAR LANDING" in self.description
 
 
 def _clean(token: str) -> str:
+    """Remove spaces: '+ 3' -> '+3' (the catalogue puts spaces inside numbers)."""
     return token.replace(" ", "")
 
 
 def _encode(directive: str, rest: str) -> list[int]:
+    """One value line -> its AGC word(s), following the assembler's rules for `directive`."""
     rest = rest.lstrip("*")  # `2DEC*`: the regex's \b can leave the star on the value side
     if directive in ("1OCT", "OCT"):
         m = re.match(r"\s*([0-7]+)", rest)
@@ -91,6 +104,8 @@ def parse_padloads(text: str, landing_mode: str = "ONE-PHASE") -> dict[str, PadL
     current: tuple[str, int, str, str] | None = None
     words: list[int] = []
 
+    # Line-by-line state machine: a header line opens an entry, value lines append words to it,
+    # the next header (or end of file) closes it via flush(). First occurrence of a name wins.
     def flush() -> None:
         if current is not None and current[0] not in entries:
             name, length, kind, desc = current
@@ -112,6 +127,7 @@ def parse_padloads(text: str, landing_mode: str = "ONE-PHASE") -> dict[str, PadL
     return entries
 
 
+# Convenience wrapper: read the file shipped in the submodule and parse it.
 def load_padloads(
     path: Path = PADLOADS_PATH, landing_mode: str = "ONE-PHASE"
 ) -> dict[str, PadLoad]:

@@ -4,6 +4,8 @@ mu = 4.9028e12 m^3/s^2. R is Luminary's own Moon radius, RSUBM = 1,738,090 m ("E
 RADIUS", CONTROLLED_CONSTANTS/504RM), not the 1,737.4 km mean radius: the flight software
 measures altitude above a sphere of exactly this radius, so a plant with a different surface
 would disagree with the AGC about where the ground is (690 m here) at touchdown.
+
+Newton: g = mu / r**2, with mu = G * M_moon and r the distance from the Moon's centre.
 """
 
 from __future__ import annotations
@@ -17,5 +19,5 @@ def g(altitude_m: float) -> float:
     mean lunar surface. At altitude 0 this is ~1.62 m/s^2, matching the commonly cited
     lunar surface gravity.
     """
-    r = R_MOON + altitude_m
+    r = R_MOON + altitude_m  # distance from the Moon's centre
     return MU_MOON / (r * r)

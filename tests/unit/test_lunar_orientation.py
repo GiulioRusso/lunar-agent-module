@@ -1,3 +1,9 @@
+"""Unit tests for plant/lunar_orientation.py (the Moon's orientation matrix, as Luminary
+computes it), including a regression against a vector read from a real yaAGC run.
+
+Run alone: `uv run pytest tests/unit/test_lunar_orientation.py -v`.
+"""
+
 import math
 
 import pytest

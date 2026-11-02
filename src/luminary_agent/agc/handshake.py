@@ -12,17 +12,26 @@ counts for:
     prompt; the client counts them, and the process waits for the marker before it returns.
 
 One `Handshake` per yaAGC port is shared by the client and the process on it.
+
+Why it is needed, in plain terms: we speak to yaAGC through two different "doors" -- the stdin
+pipe (commands like STEP) and a TCP socket (data packets). Each door is ordered on its own, but
+nothing orders one against the other. So "send packet, then STEP" could reach the AGC as "STEP,
+then packet". The byte counter and the marker below are the two receipts that restore the order.
+
+`asyncio.Event` is a flag coroutines can wait on: `set()` wakes the waiters, `clear()` re-arms.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-SYNC_CHANNEL = 0o377
-SYNC_TIMEOUT_S = 2.0
+SYNC_CHANNEL = 0o377  # 255: an unused channel number the patched yaAGC uses as the marker
+SYNC_TIMEOUT_S = 2.0  # how long to wait for a marker before assuming an unpatched yaAGC
 
 
 class Handshake:
+    """Counters shared by one AgcClient (writes/reads the socket) and one AgcProcess (stdin)."""
+
     def __init__(self) -> None:
         self.bytes_sent = 0  # total bytes the client has written to the socket
         self.syncs = 0  # markers the client has read
@@ -30,6 +39,7 @@ class Handshake:
         self._arrived = asyncio.Event()
 
     def marker_seen(self) -> None:
+        """Called by the client's socket reader each time a marker packet arrives."""
         self.syncs += 1
         self._arrived.set()
 
@@ -40,7 +50,7 @@ class Handshake:
         deadline = loop.time() + SYNC_TIMEOUT_S
         while self.syncs <= before:
             self._arrived.clear()
-            if self.syncs > before:
+            if self.syncs > before:  # re-check after clear(): a marker may have just landed
                 break
             try:
                 await asyncio.wait_for(self._arrived.wait(), max(0.0, deadline - loop.time()))
@@ -49,6 +59,8 @@ class Handshake:
                 return
 
 
+# Module-level registry: port number -> its Handshake. The client and the process never hold a
+# reference to each other; they meet here through the port they share.
 _BY_PORT: dict[int, Handshake] = {}
 
 
@@ -65,4 +77,5 @@ def lookup(port: int) -> Handshake | None:
 
 
 def unregister(port: int) -> None:
+    """The client calls this when it closes."""
     _BY_PORT.pop(port, None)

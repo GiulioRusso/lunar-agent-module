@@ -1,5 +1,13 @@
-"""v3's load-bearing claim (APOLLO_AGENT_PLAN.md Sec.3.1): the whole simulation can be paused
+"""v3's load-bearing claim (CODE_REVIEW.md Sec.3.1): the whole simulation can be paused
 while the agent thinks, with no time skip on resume. Verified against a real yaAGC.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_stepped_mode.py -v`.
 """
 
 from __future__ import annotations

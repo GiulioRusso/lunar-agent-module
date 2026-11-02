@@ -7,12 +7,20 @@ handlers, each of which calls OutputKeycode(N) on channel 015.
 Ground truth for the 7-segment code table: the Virtual AGC developer documentation
 (channel 010 format AAAABCCCCCDDDDD), cross-checked against yaDSKY2's SevenSegmentFilenames
 table, which is NULL for every code not in this table.
+
+DSKY = "Display and Keyboard", the crew's calculator-like interface to the AGC. The crew typed
+VERB (an action) and NOUN (a data item) as two-digit numbers, e.g. V16 N68 = "monitor landing
+data". The display shows PROG (program number, e.g. 63 = braking phase), VERB, NOUN and three
+5-digit signed registers R1..R3. The AGC does not send "R1 = 12345"; it sends, for each pair of
+digit positions, which *segments* to light. This module turns those segment codes back into
+numbers so Python can read the display.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Key name -> the 5-bit code the keyboard hardware put on channel 015.
 KEYCODE = {
     "0": 16,
     "1": 1,
@@ -79,6 +87,8 @@ class DskyState:
     r3_sign: int = 0
     comp_acty: bool = False
 
+    # None in a digit list = that digit is currently blank (not yet written / not lit).
+
     def _register(self, tag: int) -> tuple[list[int | None], int, int] | None:
         """Map an AAAA tag to (digit list, left index, right index)."""
         return {
@@ -91,10 +101,12 @@ class DskyState:
         }.get(tag)
 
     def _digits_to_int(self, digits: list[int | None]) -> int | None:
+        """[1, 2, 3] -> 123; None if any digit is blank."""
         if any(d is None for d in digits):
             return None
         return int("".join(str(d) for d in digits))
 
+    # R1..R3 as signed ints (sign accumulator == 1 means "only the minus bit is set").
     @property
     def r1(self) -> int | None:
         v = self._digits_to_int(self.r1_digits)
@@ -134,6 +146,8 @@ class DskyState:
             self.comp_acty = bool(value & 0o2)
 
     def _apply_channel_010(self, value: int) -> None:
+        # Layout of a channel 010 word (15 bits): AAAA B CCCCC DDDDD
+        #   AAAA  = which digit pair (tag), B = sign bit, CCCCC = left digit, DDDDD = right digit
         tag = value & 0x7800
         left = SEVEN_SEGMENT.get((value >> 5) & 0x1F)
         right = SEVEN_SEGMENT.get(value & 0x1F)
@@ -168,6 +182,7 @@ class DskyState:
 
 
 def _sign_set(value: int) -> bool:
+    """The B bit (0x0400) of a channel 010 word: the sign flag carried with a digit pair."""
     return bool(value & 0x0400)
 
 

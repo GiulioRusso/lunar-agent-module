@@ -1,3 +1,9 @@
+"""Unit tests for sim/recorder.py: the gzipped JSONL episode log (header required, ticks round-
+trip, provenance fields present). Files are written to pytest's per-test `tmp_path` folder.
+
+Run alone: `uv run pytest tests/unit/test_recorder.py -v`.
+"""
+
 import gzip
 from pathlib import Path
 

@@ -1,3 +1,9 @@
+"""Unit tests for viz/replay.py: `write_log` records a small synthetic episode with the real
+Recorder, then load_episode must thin it, carry decisions forward and find the verdict.
+
+Run alone: `uv run pytest tests/unit/test_replay.py -v`.
+"""
+
 from pathlib import Path
 
 from viz_records import decision, tick

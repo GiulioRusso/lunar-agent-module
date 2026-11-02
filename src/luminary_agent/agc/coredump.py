@@ -14,6 +14,11 @@ File format (agc_engine_init.c:MakeCoreDump), one 6-digit octal number per line:
   NUM_CHANNELS (512) lines -- current value of every I/O channel register
   8 banks * 0400 (256) words -- Erasable[bank][word]
   (remaining lines are CPU state we don't need here)
+
+Vocabulary: the AGC had *erasable* memory (RAM, 2048 words in 8 "banks" of 256) and *fixed*
+memory (the read-only program rope). A "core dump" here is just a text file with every erasable
+word and channel value, written by yaAGC -- a full snapshot of the computer's mutable state.
+The stepped simulation asks for one each guidance tick to read the AGC's own estimates.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from pathlib import Path
 
 NUM_CHANNELS = 512
 NUM_BANKS = 8
-WORDS_PER_BANK = 0o400
+WORDS_PER_BANK = 0o400  # 256 (octal 400)
 
 # Luminary099 THROTTLE_CONTROL_ROUTINES.agc: `TS THRUST` into ERASABLE_ASSIGNMENTS.agc's
 # `THRUST EQUALS 55` (octal), bank 0 (all of erasable bank 0 is the low, fixed-address
@@ -33,7 +38,11 @@ THRUST_REGISTER = (0, 0o55)
 
 
 def decode_agc_word(raw: int) -> int:
-    """Decode a raw 15-bit AGC word (0..0o77777) as ones'-complement signed."""
+    """Decode a raw 15-bit AGC word (0..0o77777) as ones'-complement signed.
+
+    Ones' complement: a negative number is its positive with every bit flipped, so -x is
+    0o77777 - x. Values above 0o37777 (top bit set) are negative. Oddity: 0o77777 is "-0".
+    """
     return raw if raw <= 0o37777 else raw - 0o77777
 
 
@@ -41,13 +50,16 @@ def decode_agc_word(raw: int) -> int:
 AGC_CYCLES_PER_SECOND = 85333
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True)  # frozen: immutable, like a named tuple
 class CoreDump:
+    """One parsed core-dump file."""
+
     channels: tuple[int, ...]  # raw values, index = channel number
     erasable: tuple[tuple[int, ...], ...]  # erasable[bank][word], raw values
     cycle_counter: int = 0  # AGC machine cycles executed since power-on
 
     def erasable_signed(self, bank: int, word: int) -> int:
+        """One erasable word, decoded to a signed Python int."""
         return decode_agc_word(self.erasable[bank][word])
 
     def ecadr_words(self, ecadr: int, count: int) -> list[int]:
@@ -58,6 +70,7 @@ class CoreDump:
     @property
     def clock_cs(self) -> int:
         """AGC clock TIME2:TIME1 in centiseconds (erasable 024/025)."""
+        # TIME2 counts overflows of TIME1 (a 14-bit counter: 0o40000 = 16384 ticks).
         return self.erasable[0][0o24] * 0o40000 + self.erasable[0][0o25]
 
 
@@ -69,13 +82,15 @@ def parse_core_dump(path: str | Path) -> CoreDump:
     needed = NUM_CHANNELS + NUM_BANKS * WORDS_PER_BANK
     if len(tokens) < needed:
         raise ValueError(f"truncated core dump: got {len(tokens)} values, need >= {needed}")
-    values = [int(tok, 8) for tok in tokens[:needed]]
+    values = [int(tok, 8) for tok in tokens[:needed]]  # int(s, 8): parse octal text
     channels = tuple(values[:NUM_CHANNELS])
     flat_erasable = values[NUM_CHANNELS:]
+    # Cut the flat list into 8 banks of 256 words.
     erasable = tuple(
         tuple(flat_erasable[b * WORDS_PER_BANK : (b + 1) * WORDS_PER_BANK])
         for b in range(NUM_BANKS)
     )
+    # The first CPU-state value after memory is the cycle counter (older dumps may lack it).
     cycle_counter = int(tokens[needed], 8) if len(tokens) > needed else 0
     return CoreDump(channels=channels, erasable=erasable, cycle_counter=cycle_counter)
 
@@ -86,6 +101,7 @@ class CoreDumpPoller:
 
     A read racing yaAGC's own fwrite loop can see a truncated file; that's treated as
     "no update this tick" rather than an error, since the next poll will see it complete.
+    Used only in realtime mode; stepped mode asks for a dump explicitly (AgcProcess.coredump).
     """
 
     path: Path
@@ -94,6 +110,7 @@ class CoreDumpPoller:
     _task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
     async def _poll_loop(self) -> None:
+        """Background task: re-read the file every `interval_s` until stop() cancels it."""
         while True:
             try:
                 self.latest = parse_core_dump(self.path)
@@ -110,6 +127,7 @@ class CoreDumpPoller:
 
     @property
     def thrust_register_signed(self) -> int | None:
+        """Luminary's last throttle command (signed), or None before the first good read."""
         if self.latest is None:
             return None
         return self.latest.erasable_signed(*THRUST_REGISTER)

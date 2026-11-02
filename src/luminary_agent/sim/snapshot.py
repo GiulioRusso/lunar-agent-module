@@ -1,4 +1,4 @@
-"""A cached AGC snapshot of everything before ignition (APOLLO_AGENT_PLAN.md Phase S, lever 1).
+"""A cached AGC snapshot of everything before ignition (CODE_REVIEW.md Phase S, lever 1).
 
 Every episode starts the same way, because **the dispersions change the world, never what the AGC
 was told**: fresh start, hardware discretes, ~70 pad-load words through P27 (~57 s of AGC time),
@@ -12,9 +12,12 @@ landing time, the gimbal counts the CDUs were seeded to). `ready_agc` is what ca
 resumes a yaAGC from the snapshot and hands back a process, a client and the `LandingSetup`, with
 the AGC sitting exactly where the slow path left it.
 
-The cache key covers everything that changes what the snapshot contains: the scenario, the rope
-binary, and a version number to bump by hand when the setup sequence itself changes. A stale
+The cache key covers the scenario, Python sources, pad loads, listing, rope and emulator
+binaries, plus an explicit schema version. A stale
 snapshot is worse than a slow one, so when in doubt pass `refresh=True` (or delete the directory).
+
+Files: results/cache/preignition-<key>.core (yaAGC's own resumable dump) + .json (meta).
+CLI: `luminary snapshot --refresh` rebuilds it.
 """
 
 from __future__ import annotations
@@ -36,18 +39,25 @@ from luminary_agent.sim.landing_scenario import DescentScenario, LandingSetup, p
 from luminary_agent.sim.p63_crew import start_p63
 
 SNAPSHOT_VERSION = 1  # bump when the setup sequence changes what the AGC holds
-DEFAULT_CACHE = Path("results/cache")
+DEFAULT_CACHE = Path("results/cache")  # relative: run commands from the repository root
 BOOT_INSTRUCTIONS = 30_000  # yaAGC opens its sockets only once its engine has run
 DISPLAY_REFRESH_TRIES = 20  # one full DSKY multiplex cycle is ~1.4 s of AGC time
 
 
 def snapshot_key(scenario: DescentScenario, rope: Path = DEFAULT_ROPE) -> str:
-    rope_stat = rope.stat()
+    """Content hash of version, scenario, rope, emulator and setup source files."""
+    from luminary_agent.agc.build import listing_path, yaagc_path
+    from luminary_agent.agc.padloads import PADLOADS_PATH
+
+    package = Path(__file__).resolve().parents[1]
+    setup_sources = sorted(package.rglob("*.py")) + [PADLOADS_PATH, listing_path()]
     material = json.dumps(
         {
             "version": SNAPSHOT_VERSION,
             "scenario": asdict(scenario),
-            "rope": [rope.name, rope_stat.st_size, int(rope_stat.st_mtime)],
+            "rope": hashlib.sha256(rope.read_bytes()).hexdigest(),
+            "emulator": hashlib.sha256(yaagc_path().read_bytes()).hexdigest(),
+            "setup": [hashlib.sha256(p.read_bytes()).hexdigest() for p in setup_sources],
         },
         sort_keys=True,
     )
@@ -55,6 +65,7 @@ def snapshot_key(scenario: DescentScenario, rope: Path = DEFAULT_ROPE) -> str:
 
 
 def snapshot_path(scenario: DescentScenario, cache_dir: Path = DEFAULT_CACHE) -> Path:
+    """Where the snapshot for this scenario lives (whether or not it exists yet)."""
     return cache_dir / f"preignition-{snapshot_key(scenario)}.core"
 
 
@@ -80,9 +91,10 @@ async def build_snapshot(
     path: Path,
 ) -> None:
     """Run the slow pre-ignition path once and save it. Minutes; everything after is seconds."""
-    async with AgcProcess(workdir, mode="stepped", port=port) as agc:
+    async with AgcProcess(workdir, mode="stepped", port=port) as agc:  # 1. boot a fresh AGC
         await agc.step(BOOT_INSTRUCTIONS)
-        async with AgcClient(port=port) as client:
+        async with AgcClient(port=port) as client:  # 2. connect to its socket
+            # 3. mission data, 4. crew prompts up to the countdown, 5. save the core
             setup = await prepare_landing(agc, client, symbols, scenario)
             burn_attitude = await start_p63(agc, client, symbols)
             await agc.save_state(path)
@@ -130,6 +142,7 @@ async def ready_agc(
     scenario = scenario or DescentScenario()
     path = await ensure_snapshot(workdir, port, symbols, scenario, cache_dir, refresh)
     meta = json.loads(path.with_suffix(".json").read_text())
+    # Start yaAGC from the saved core instead of power-on.
     async with AgcProcess(workdir, mode="stepped", port=port, resume_from=path) as agc:
         await agc.step(BOOT_INSTRUCTIONS)
         async with AgcClient(port=port) as client:
@@ -144,4 +157,6 @@ async def ready_agc(
                 if client.dsky.verb_number is not None:
                     break
             burn = meta["burn_attitude"]
+            # `yield` inside @asynccontextmanager: the caller's `async with` body runs here; the
+            # AGC and client are closed when that body ends.
             yield agc, client, _setup_from_meta(scenario, meta), (burn[0], burn[1], burn[2])

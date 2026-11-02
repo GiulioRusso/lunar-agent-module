@@ -1,3 +1,9 @@
+"""Closed-loop check of sim/manual_control.py: the ManualController flying the plant alone
+(no AGC) from 150 m must land inside the soft-touchdown limits.
+
+Run alone: `uv run pytest tests/unit/test_manual_control.py -v`.
+"""
+
 from luminary_agent.plant.dynamics import DT_S, Control, PlanarState, step
 from luminary_agent.plant.gravity import R_MOON
 from luminary_agent.plant.propulsion import DescentEngine

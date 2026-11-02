@@ -1,4 +1,9 @@
-"""Record builders shared by the viz tests: what the recorder writes, minimally."""
+"""Record builders shared by the viz tests: what the recorder writes, minimally.
+
+Not a test file itself (no `test_` prefix, so pytest does not collect it). `tick(**over)` and
+`decision(kind)` return dicts shaped like sim/loop.py and sim/descent.py log records; keyword
+arguments override any field, e.g. `tick(t=5.0, h_m=100.0)`.
+"""
 
 from luminary_agent.plant.propulsion import F_MAX_N
 

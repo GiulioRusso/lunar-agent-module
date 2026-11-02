@@ -2,6 +2,9 @@
 
 python -m luminary_agent.eval.report results/logs/demo
 python -m luminary_agent.eval.report --compare results/logs/dev   # one table, every config
+
+Reads only the small per-episode `t<tier>_s<seed>.json` files that run_set writes (not the big
+.jsonl.gz logs). Several `.get(new_key, old_key)` fallbacks keep older result files readable.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from typing import Any
 
 
 def summarize(directory: Path) -> str:
+    """Plain-text table: one row per tier, medians over that tier's episodes."""
     by_tier: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for f in sorted(directory.glob("t*_s*.json")):
         r = json.loads(f.read_text())
@@ -60,6 +64,7 @@ def summarize(directory: Path) -> str:
 
 
 def _rows(directory: Path) -> dict[int, list[dict[str, Any]]]:
+    """{tier: [flattened score + counts per episode]} for one results directory."""
     by_tier: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for f in sorted(directory.glob("t*_s*.json")):
         r = json.loads(f.read_text())
@@ -85,7 +90,7 @@ def compare(root: Path) -> str:
     ]
     for directory in sorted(p for p in root.iterdir() if p.is_dir()):
         for tier, rows in sorted(_rows(directory).items()):
-
+            # `rows=rows` binds the current loop value (a classic Python closure-in-loop fix).
             def med(key: str, rows: list[dict[str, Any]] = rows) -> float:
                 return statistics.median(float(r[key]) for r in rows)
 
@@ -105,6 +110,7 @@ def compare(root: Path) -> str:
 
 
 if __name__ == "__main__":
+    # Minimal CLI without argparse: `report DIR` or `report --compare ROOT`.
     if sys.argv[1] == "--compare":
         print(compare(Path(sys.argv[2])))
     else:

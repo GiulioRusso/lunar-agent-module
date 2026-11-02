@@ -1,3 +1,9 @@
+"""Unit tests for eval/score.py: soft_touchdown vs mission_success, on hand-made DescentResults
+(`_res`) and hand-made Surfaces (a flat one, one with a boulder, one with a steep bump).
+
+Run alone: `uv run pytest tests/unit/test_score.py -v`.
+"""
+
 from luminary_agent.eval.score import score
 from luminary_agent.plant.dynamics import PlanarState
 from luminary_agent.plant.terrain import Bump, Hazard, Surface

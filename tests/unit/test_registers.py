@@ -1,3 +1,9 @@
+"""Unit tests for agc/registers.py: counter-increment packets (channel 0x80 | register, value =
+increment type), one packet per pulse, sign selecting PINC/MINC or PCDU/MCDU.
+
+Run alone: `uv run pytest tests/unit/test_registers.py -v`.
+"""
+
 from luminary_agent.agc.channels import decode_packet
 from luminary_agent.agc.registers import (
     MCDU,

@@ -11,6 +11,10 @@ ECADR -- the erasable address format the update program (P27) and DSKY expect --
 for switched erasable (`E<bank>,<addr>`), and simply the address for unswitched erasable
 (0-01377), which the same formula gives with bank = address >> 8. Derived from the way P27's
 UPEND71 splits an ECADR (`TS EBANK` for the bank, `MASK LOW8` for the offset).
+
+Why: the Python code never hard-codes "the altitude lives at address 1234". It asks
+`symbols.ecadr("HCALC")` and the address comes from the assembler's own output, so it is always
+right for the rope actually built.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+# One symbol-table entry: "<line>,<kind>:  <NAME>  <address>" (see the examples above).
 _ENTRY = re.compile(r"\s(\d+),([EFC]):\s+(\S+)\s+(\S+)")
 _BANKED = re.compile(r"^E(\d),([0-7]+)$")
 _PLAIN_OCTAL = re.compile(r"^[0-7]+$")
@@ -26,6 +31,8 @@ _PLAIN_OCTAL = re.compile(r"^[0-7]+$")
 
 @dataclass(frozen=True)
 class Symbol:
+    """One named address or constant from the listing."""
+
     name: str
     kind: str  # "E" erasable, "F" fixed, "C" constant/equate
     bank: int | None
@@ -33,6 +40,8 @@ class Symbol:
 
 
 class SymbolTable:
+    """Name -> Symbol lookup. `"X" in table` works thanks to __contains__."""
+
     def __init__(self, symbols: dict[str, Symbol]) -> None:
         self._symbols = symbols
 
@@ -45,11 +54,13 @@ class SymbolTable:
         return sym.value
 
     def ecadr(self, name: str) -> int:
+        """ECADR (bank * 256 + offset) of an erasable variable, e.g. ecadr("THETAD")."""
         sym = self._get(name, "E")
         bank = sym.bank if sym.bank is not None else sym.value >> 8
         return bank * 0o400 + (sym.value & 0o377)
 
     def _get(self, name: str, kind: str) -> Symbol:
+        """Look up `name` and insist it is of `kind` (clear errors instead of wrong addresses)."""
         try:
             sym = self._symbols[name]
         except KeyError:
@@ -60,6 +71,7 @@ class SymbolTable:
 
 
 def parse_listing(text: str) -> SymbolTable:
+    """Build a SymbolTable from the whole listing text (only E and C entries are kept)."""
     symbols: dict[str, Symbol] = {}
     for _, kind, name, raw in _ENTRY.findall(text):
         banked = _BANKED.match(raw)
@@ -69,9 +81,10 @@ def parse_listing(text: str) -> SymbolTable:
             sym = Symbol(name, kind, None, int(raw, 8))
         else:
             continue  # fixed-memory entries and anything we don't consume
-        symbols.setdefault(name, sym)
+        symbols.setdefault(name, sym)  # keep the first definition if a name repeats
     return SymbolTable(symbols)
 
 
 def load_symbols(path: Path) -> SymbolTable:
+    """Read and parse a listing file (build.listing_path())."""
     return parse_listing(path.read_text())

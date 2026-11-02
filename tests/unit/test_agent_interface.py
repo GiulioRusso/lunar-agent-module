@@ -1,3 +1,11 @@
+"""Unit tests for the agent interface: Observation (sim/observation.py), the baseline policies
+(policies/scripted.py), the Executor (sim/executor.py) and the ManualController.
+The Executor is tested against fakes: `SimpleNamespace(manual=None)` stands in for a Simulation
+and `_Client` records channel writes instead of sending them to a real AGC.
+
+Run alone: `uv run pytest tests/unit/test_agent_interface.py -v`.
+"""
+
 import asyncio
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -11,6 +19,7 @@ from luminary_agent.sim.manual_control import ManualController
 from luminary_agent.sim.observation import Observation
 
 
+# A fixed Observation (positional fields, in the dataclass order) with a few knobs to vary.
 def _obs(mode: str = "auto", alt: float | None = 500.0, program: int | None = 64) -> Observation:
     return Observation(
         100.0,
@@ -33,6 +42,8 @@ def _obs(mode: str = "auto", alt: float | None = 500.0, program: int | None = 64
 
 
 class _Client:
+    """Fake AgcClient: remembers what would have been written to the AGC."""
+
     def __init__(self) -> None:
         self.writes: list[Mapping[int, int]] = []
 

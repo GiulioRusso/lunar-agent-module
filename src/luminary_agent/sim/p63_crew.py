@@ -1,4 +1,4 @@
-"""The crew's part of starting P63, answered through the DSKY (APOLLO_AGENT_PLAN.md ledger).
+"""The crew's part of starting P63, answered through the DSKY (CODE_REVIEW.md ledger).
 
 Mapped from the flight software's own prompts, each of which is a decision an agent will
 eventually make:
@@ -18,6 +18,9 @@ without it R60LEM re-requests the maneuver forever, silently), and a CSM state v
 Attitude: there is no attitude dynamics yet, so the CDU registers are *seeded* at the desired
 burn attitude (Luminary's THETAD) before the maneuver is approved. R60LEM then finds the vehicle
 already there and the maneuver is a no-op. That is a stepping stone, not a vehicle that rotates.
+
+Notation: "V37E 63E" = press VERB, 3, 7, ENTR, 6, 3, ENTR. "V33E" = PROCEED. P63 = braking
+phase program; P64 = approach; P65/P66/P67 = final descent (auto / rate-of-descent / manual).
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ CHUNK_STEPS = 20_000  # ~0.4 s of AGC time per look at the display
 
 
 class CrewProcedureError(RuntimeError):
-    pass
+    """The DSKY never showed the prompt we were waiting for."""
 
 
 async def wait_for_display(
@@ -45,6 +48,7 @@ async def wait_for_display(
 ) -> None:
     """Step until the DSKY shows V<verb> N<noun> (having first shown `seen_verb`, if given)."""
     seen = seen_verb is None
+    # Run the AGC in small chunks and look at the (virtual) display after each one.
     for _ in range(max_chunks):
         await agc.step(CHUNK_STEPS)
         d = client.dsky
@@ -67,8 +71,8 @@ async def start_p63(
     Returns the burn-attitude gimbal counts the CDUs were seeded to.
     """
     dsky = SteppedDsky(agc, client)
-    await dsky.verb(37)
-    await dsky.enter_decimal(63)
+    await dsky.verb(37)  # V37 = "change program to ..."
+    await dsky.enter_decimal(63)  # ... P63
 
     await wait_for_display(agc, client, verb=6, noun=61)  # IGNALG done
     await dsky.verb(33)  # proceed

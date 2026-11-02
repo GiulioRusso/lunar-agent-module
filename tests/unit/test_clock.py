@@ -1,3 +1,9 @@
+"""Unit tests for sim/clock.py RealtimeClock (wall-clock pacing and lag reporting).
+These take real wall time (~0.1 s) because pacing against the wall clock is what they check.
+
+Run alone: `uv run pytest tests/unit/test_clock.py -v`.
+"""
+
 import asyncio
 
 from luminary_agent.sim.clock import RealtimeClock

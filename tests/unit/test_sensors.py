@@ -1,6 +1,10 @@
 """Analytic constant-acceleration checks for the IMU model, per
-APOLLO_AGENT_PLAN.md Phase 1's explicit instruction to validate this "most
+CODE_REVIEW.md Phase 1's explicit instruction to validate this "most
 failure-prone module" before it's ever wired to the AGC.
+
+Tests plant/sensors.py (PIPA/CDU pulse scale factors and the PulseCounter quantiser).
+
+Run alone: `uv run pytest tests/unit/test_sensors.py -v`.
 """
 
 import math

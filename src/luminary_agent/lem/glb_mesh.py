@@ -14,7 +14,11 @@ numeric, no model-specific hand edits):
     uv run --with DracoPy python -m luminary_agent.lem.glb_mesh "docs/Apollo Lunar Module.glb"
 
 Source: NASA 3D Resources, "Apollo Lunar Module" (https://science.nasa.gov/3d-resources/apollo-lunar-module/).
-Credit: NASA. See docs/lem-model-sources.md for the licence status.
+Credit: NASA. See CODE_REVIEW.md for the licence status.
+
+Vocabulary: a *mesh* is a list of 3-D points (vertices, array shape (n, 3)) plus triangles
+(faces, shape (m, 3): three vertex indices each). GLB = binary glTF, a standard 3-D model file.
+`uv run --with DracoPy` adds the optional decoder package for that one command only.
 """
 
 from __future__ import annotations
@@ -28,22 +32,26 @@ from luminary_agent.lem.glb_reference import DOC_HEIGHT_M, load_parts, to_model_
 from luminary_agent.lem.mesh import MESH_PATH
 
 ROOF_Z_M = 5.9  # parts wholly above this are antennas and dishes
-SPECK_M = 0.05
+SPECK_M = 0.05  # parts smaller than 5 cm are dropped
 CELL_FRACTION, CELL_MIN_M, CELL_MAX_M = 0.15, 0.03, 0.12
 
 
 def _cluster(v: np.ndarray, f: np.ndarray, cell: float) -> tuple[np.ndarray, np.ndarray]:
     """Merge vertices falling in the same grid cell; drop triangles that collapse."""
+    # Integer grid cell of each vertex; `inv[i]` = which unique cell vertex i fell into.
     key, inv = np.unique(np.floor(v / cell).astype(np.int64), axis=0, return_inverse=True)
     inv = inv.reshape(-1)
     merged, count = np.zeros((len(key), 3)), np.zeros(len(key))
+    # Average position of the vertices in each cell becomes the merged vertex.
     np.add.at(merged, inv, v)
     np.add.at(count, inv, 1)
     merged /= count[:, None]
+    # Re-express triangles with merged indices; drop those with two corners in the same cell.
     tri = inv[f]
     tri = tri[(tri[:, 0] != tri[:, 1]) & (tri[:, 1] != tri[:, 2]) & (tri[:, 0] != tri[:, 2])]
     if len(tri):
         tri = np.unique(np.sort(tri, axis=1), axis=0)  # duplicates go; winding is not needed
+    # Renumber so only vertices still used by some triangle are kept.
     used = np.unique(tri)
     remap = -np.ones(len(merged), dtype=int)
     remap[used] = np.arange(len(used))
@@ -51,6 +59,7 @@ def _cluster(v: np.ndarray, f: np.ndarray, cell: float) -> tuple[np.ndarray, np.
 
 
 def build(glb: Path, out: Path = MESH_PATH) -> tuple[int, int]:
+    """Run steps 1-4 of the module docstring; return (vertex count, triangle count)."""
     parts = load_parts(glb)
     all_v = np.vstack([p["v"] for p in parts])
     frame = to_model_frame(all_v)
@@ -59,7 +68,7 @@ def build(glb: Path, out: Path = MESH_PATH) -> tuple[int, int]:
         n = len(p["v"])
         v = frame[start : start + n]
         start += n
-        ext = np.sort(v.max(0) - v.min(0))
+        ext = np.sort(v.max(0) - v.min(0))  # bounding-box size, smallest to largest
         rod = ext[2] > 1.0 and ext[1] < 0.2 and v[:, 2].max() > 5.0
         if ext[2] < SPECK_M or v[:, 2].min() >= ROOF_Z_M or rod:
             continue
@@ -71,6 +80,7 @@ def build(glb: Path, out: Path = MESH_PATH) -> tuple[int, int]:
         colors.append(np.tile(np.array(p["color"]) * 255, (len(nf), 1)))
         offset += len(nv)
     v_all, f_all, c_all = np.vstack(verts), np.vstack(faces), np.vstack(colors)
+    # Sanity: still ~7 m tall, and few enough vertices for 16-bit indices (uint16 < 65536).
     assert abs(v_all[:, 2].max() - DOC_HEIGHT_M) < 0.7 and len(v_all) < 65536
     np.savez_compressed(
         out, vertices=v_all.astype(np.float32), faces=f_all.astype(np.uint16),

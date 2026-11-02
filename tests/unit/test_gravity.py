@@ -1,3 +1,8 @@
+"""Sanity checks for plant/gravity.py.
+
+Run alone: `uv run pytest tests/unit/test_gravity.py -v`.
+"""
+
 import math
 
 from luminary_agent.plant.gravity import g

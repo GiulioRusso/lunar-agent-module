@@ -3,6 +3,11 @@
 Pure numpy + zlib, painter's algorithm; the real renderer is the S3 window.
 
     python -m luminary_agent.lem.preview out.png
+
+How it draws (a tiny software rasteriser): rotate the vertices to the camera, compute a
+brightness per triangle from its normal and a fixed light, then for every triangle fill the
+pixels inside it (barycentric coordinates l0, l1) that are nearer than what is already there
+(z-buffer). Written to PNG with the standard library only (zlib + struct).
 """
 
 from __future__ import annotations
@@ -17,12 +22,14 @@ from numpy.typing import NDArray
 
 from luminary_agent.lem.mesh import LemMesh, load_lem_mesh
 
+# Unit vector pointing toward the light.
 LIGHT = np.array([-0.4, -0.6, 0.7]) / np.linalg.norm([-0.4, -0.6, 0.7])
 
 
 def render(
     mesh: LemMesh, azimuth_deg: float, elevation_deg: float, size: int = 560, scale: float = 62.0
 ) -> NDArray[np.uint8]:
+    """One view as an RGB image array (size x size x 3)."""
     a, e = np.radians(azimuth_deg), np.radians(elevation_deg)
     yaw = np.array([[np.cos(a), np.sin(a), 0], [-np.sin(a), np.cos(a), 0], [0, 0, 1]])
     pitch = np.array([[1, 0, 0], [0, np.cos(e), -np.sin(e)], [0, np.sin(e), np.cos(e)]])
@@ -33,6 +40,7 @@ def render(
     shade = 0.35 + 0.65 * np.abs(normal @ LIGHT)
     img = np.full((size, size, 3), (24, 24, 28), np.uint8)
     zbuf = np.full((size, size), 1e9)
+    # Screen coordinates (pixels): x to the right, y downward, 40 px margin at the bottom.
     sx, sy = size / 2 + tri[:, :, 0] * scale, size - 40 - tri[:, :, 2] * scale
     for i in np.argsort(-tri[:, :, 1].mean(1)):  # far to near
         x, y = sx[i], sy[i]
@@ -54,6 +62,7 @@ def render(
 
 
 def write_png(path: Path, img: NDArray[np.uint8]) -> None:
+    """Minimal PNG encoder: signature + IHDR (size/format) + IDAT (zlib pixels) + IEND."""
     h, w, _ = img.shape
     raw = b"".join(b"\x00" + img[y].tobytes() for y in range(h))
 

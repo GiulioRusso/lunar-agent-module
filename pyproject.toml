@@ -12,6 +12,16 @@ dependencies = [
     "pygame-ce>=2.5",
 ]
 
+[project.optional-dependencies]
+agent = [
+    "langgraph>=1,<2",
+    "langchain>=1,<2",
+    "langchain-openai>=1,<2",
+    "langchain-anthropic>=1,<2",
+    "langchain-ollama>=1,<2",
+    "pydantic>=2,<3",
+]
+
 [project.scripts]
 luminary = "luminary_agent.__main__:main"
 

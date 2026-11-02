@@ -1,3 +1,9 @@
+"""Unit tests for agc/uplink.py input validation: bad P27 loads are rejected *before* any key is
+pressed, so these need no emulator (`FakeAgc` only has to look like a stepped process).
+
+Run alone: `uv run pytest tests/unit/test_uplink_validation.py -v`.
+"""
+
 import asyncio
 from pathlib import Path
 from typing import Any

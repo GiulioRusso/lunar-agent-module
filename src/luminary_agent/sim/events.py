@@ -5,17 +5,20 @@ at ~2 s per decision would add an hour of wall clock to a 20-minute episode, whi
 difference between a 60-episode eval that finishes and one that does not. So the planner fires on
 what actually changes a decision -- a program transition, a new alarm, radar lock coming or going,
 the mode changing, the previous intent expiring -- plus a slow heartbeat so "nothing happened" is
-still revisited (APOLLO_AGENT_PLAN.md Phase 4, item 2).
+still revisited (CODE_REVIEW.md Phase 4, item 2).
 
 `MIN_PERIOD_S` is a floor, not a schedule: two events in the same instant cost one decision.
+
+Usage in the loop:  `why = trigger.reason(obs)`; if not None -> ask the policy ->
+`trigger.fired(obs, intent.valid_until_s)`.
 """
 
 from __future__ import annotations
 
 from luminary_agent.sim.observation import Observation
 
-HEARTBEAT_S = 5.0
-MIN_PERIOD_S = 0.5
+HEARTBEAT_S = 5.0  # ask at least this often, even if nothing changed
+MIN_PERIOD_S = 0.5  # never ask more often than this
 
 
 class Trigger:
@@ -25,14 +28,15 @@ class Trigger:
     def __init__(self, heartbeat_s: float = HEARTBEAT_S, min_period_s: float = MIN_PERIOD_S):
         self.heartbeat_s = heartbeat_s
         self.min_period_s = min_period_s
-        self.prev: Observation | None = None
-        self.last_s = float("-inf")
+        self.prev: Observation | None = None  # the observation at the last decision
+        self.last_s = float("-inf")  # -inf: "never" (any time is later)
         self.valid_until_s = float("-inf")
 
     def reason(self, obs: Observation) -> str | None:
         """None: no decision needed this tick. Otherwise a short description of what changed."""
         if obs.t_s - self.last_s < self.min_period_s:
             return None
+        # Checked in priority order; the first change found is the reason reported.
         p = self.prev
         if p is None:
             return "first"

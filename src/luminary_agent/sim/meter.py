@@ -1,4 +1,4 @@
-"""Where the wall clock actually goes in a run (APOLLO_AGENT_PLAN.md Phase S, lever 2).
+"""Where the wall clock actually goes in a run (CODE_REVIEW.md Phase S, lever 2).
 
 A descent runs at well under real time, and the plan's instruction is explicit: profile before
 optimising, and publish the split. This is the smallest thing that does it -- a wall-time
@@ -12,6 +12,8 @@ Sections are named for what the time is spent *on*, not where the code lives:
   pipa      accelerometer pulses written to the AGC's counters
   plant     the RK4 integration and the IMU model
   record    writing the episode log
+
+Usage:  `with meter.section("plant"): ...code...` -> the time spent inside is added to "plant".
 """
 
 from __future__ import annotations
@@ -22,11 +24,15 @@ from contextlib import contextmanager
 
 
 class Meter:
+    """Named wall-time accumulators (a tiny profiler)."""
+
     def __init__(self) -> None:
         self.totals: dict[str, float] = {}
         self.counts: dict[str, int] = {}
         self._start = time.perf_counter()
 
+    # @contextmanager turns this generator into something usable with `with`: code before
+    # `yield` runs on entry, the `finally` block on exit (even if an exception is raised).
     @contextmanager
     def section(self, name: str) -> Iterator[None]:
         started = time.perf_counter()
@@ -39,6 +45,7 @@ class Meter:
 
     @property
     def wall_s(self) -> float:
+        """Wall seconds since this Meter was created."""
         return time.perf_counter() - self._start
 
     def report(self, sim_s: float) -> dict[str, float | dict[str, float]]:

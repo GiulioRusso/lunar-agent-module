@@ -7,6 +7,14 @@ diverged when run side by side. This test runs several copies of the same short 
 once and demands bit-identical AGC cycle counters throughout. It is probabilistic in the failing
 direction (a race may not fire in one run), so a pass is evidence, not proof; the full-episode
 check is `luminary eval` on the same seed twice.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_determinism.py -v`.
 """
 
 from __future__ import annotations

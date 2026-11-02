@@ -1,3 +1,9 @@
+"""Unit tests for plant/throttle.py:ThrottleActuator (engine on/off, slew rate limit, clamping
+at the minimum and the upper detent). `_on()` returns an actuator with the engine lit.
+
+Run alone: `uv run pytest tests/unit/test_throttle.py -v`.
+"""
+
 import math
 
 from luminary_agent.plant.propulsion import F_MAX_N, THRUST_N_PER_COUNT

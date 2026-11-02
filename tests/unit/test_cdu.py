@@ -1,3 +1,8 @@
+"""Unit tests for agc/cdu.py scale constants and the fast CDU pulse packets (agc/registers.py).
+
+Run alone: `uv run pytest tests/unit/test_cdu.py -v`.
+"""
+
 import math
 
 from luminary_agent.agc.cdu import COUNTS_PER_REV

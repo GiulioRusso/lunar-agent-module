@@ -20,7 +20,7 @@ holding a higher throttle (its guidance closes on acceleration, so it never repo
 the margin disappears. Nothing new has to be actuated to fly out of it -- taking over early and
 descending directly costs less propellant than letting Luminary hover -- so it is a decision the
 agent can actually make, unlike an axis that needs the blocked ROD/LPD paths
-(docs/flight-contexts.md Sec.2.2). The fault time is drawn inside the approach phase, after the
+(CODE_REVIEW.md Sec.2.2). The fault time is drawn inside the approach phase, after the
 P63 -> P64 switch (~577 s in the nominal run) and before the last 100 m.
 Tier 3 also has a radar dead band (no lock over a 150-250 m altitude span somewhere in 100-400 m)
 and every tier a small radar bias. The propellant shortfall is the margin a real crew watched
@@ -28,6 +28,9 @@ and every tier a small radar bias. The propellant shortfall is the margin a real
 Scale is set by physics, not taste: with no landing-radar update the AGC never learns a start-state
 error, and a velocity error grows to ~700 m of position error per m/s over the descent (measured:
 0.32 m/s made the AGC hover at 406 m until the propellant ran out; 1 m/s crashed 850 m short).
+
+Every episode is identified by (tier, seed): `sample(seed, tier)` always returns the same
+Dispersion for the same pair, so any run can be reproduced exactly.
 """
 
 from __future__ import annotations
@@ -41,18 +44,21 @@ from luminary_agent.plant.radar import Radar
 
 LOADED_MASS_KG = 15_000.0
 NOMINAL_PROPELLANT_KG = 8_200.0  # usable descent propellant; the nominal landing leaves ~570 kg
-NOMINAL_DRY_MASS_KG = LOADED_MASS_KG - NOMINAL_PROPELLANT_KG
+NOMINAL_DRY_MASS_KG = LOADED_MASS_KG - NOMINAL_PROPELLANT_KG  # 6,800 kg
 
 _TIERS = {  # (thrust_frac, dh_m, dv_ms, mass_frac, propellant_shortfall_frac, thrust_fault_frac)
     1: (0.005, 0.0, 0.005, 0.01, 0.02, 0.0),
     2: (0.015, 10.0, 0.02, 0.03, 0.08, 0.06),
     3: (0.03, 100.0, 0.3, 0.05, 0.16, 0.15),
 }
+# Each number is a +- range the sample is drawn uniformly from, e.g. tier 3 thrust in [0.97, 1.03].
 FAULT_WINDOW_S = (620.0, 900.0)  # approach phase: after P63 -> P64, before the last ~100 m
 
 
 @dataclass(frozen=True)
 class Dispersion:
+    """How this episode's world differs from nominal. Default values = no difference."""
+
     thrust_scale: float = 1.0
     mass_scale: float = 1.0
     dh0_m: float = 0.0
@@ -75,6 +81,7 @@ class Dispersion:
         return replace(e, f_max_n=e.f_max_n * scale)
 
     def apply(self, s: PlanarState) -> PlanarState:
+        """The true start state: nominal start `s` shifted by the errors the AGC does not know."""
         return PlanarState(
             s.h_m + self.dh0_m,
             s.x_m,
@@ -85,6 +92,7 @@ class Dispersion:
 
 
 def sample(seed: int, tier: int) -> Dispersion:
+    """The deterministic dispersion for episode (tier, seed)."""
     thrust, dh, dv, mass, prop, fault = _TIERS[tier]
     rng = random.Random(f"{tier}:{seed}")
     rf = random.Random(f"fault:{tier}:{seed}")  # its own stream: the draws below stay stable
@@ -96,6 +104,7 @@ def sample(seed: int, tier: int) -> Dispersion:
         bias_frac=rr.uniform(-0.01, 0.01) * tier,
         seed=seed,
     )
+    # Positional arguments, in the dataclass field order above.
     return Dispersion(
         1.0 + rng.uniform(-thrust, thrust),
         1.0 + rng.uniform(-mass, mass),

@@ -13,6 +13,10 @@ and P63 stalls before ignition ("waited for V6 N61, last saw V37").
 Per episode it writes <out>/t{tier}_s{seed}.{json,jsonl.gz}: the result and the recorded log
 (replay it with `luminary view`). Re-running skips episodes whose .json already exists; one
 failing episode is reported and does not stop the rest.
+
+Parallelism: each episode is a separate Python process (`python -m ...run_episode`) with its own
+yaAGC. asyncio.Semaphore(workers) lets at most `workers` of them run at once; the rest wait.
+Episode i gets ports port_base + 10*i ... +9, so no two episodes ever share a port.
 """
 
 from __future__ import annotations
@@ -26,17 +30,37 @@ from typing import Any
 
 from luminary_agent.eval.report import summarize
 from luminary_agent.eval.sets import SETS
+from luminary_agent.policies.agent_config import policy_configuration
 from luminary_agent.policies.scripted import POLICIES
+from luminary_agent.sim.recorder import evaluation_fingerprint
 
-EPISODE_ATTEMPTS = 2
+EPISODE_ATTEMPTS = 2  # a failed episode is retried once
 PORTS_PER_AGC = 10  # yaAGC binds port .. port+9 (SocketAPI.c:413)
 
 
 async def one(
     tier: int, seed: int, port: int, out: Path, policy: str, safety: bool = True
 ) -> dict[str, Any]:
+    """Run one episode in a child Python process (unless its result already exists)."""
     stem = out / f"t{tier}_s{seed}"
-    if not stem.with_suffix(".json").exists():
+    fingerprint = evaluation_fingerprint(
+        {
+            "tier": tier,
+            "seed": seed,
+            "policy": policy,
+            "agent_config": policy_configuration(policy),
+            "safety": safety,
+            "surface": True,
+        }
+    )
+    result_path = stem.with_suffix(".json")
+    if result_path.exists():
+        cached = json.loads(result_path.read_text())
+        if cached.get("evaluation_fingerprint") != fingerprint:
+            raise ValueError(
+                f"incompatible cached result {result_path}; use a new output directory"
+            )
+    if not result_path.exists():
         # Belt and braces: the yaAGC input-thread stall that once hit ~2 % of parallel episodes is
         # fixed in patches/yaagc-free-run.patch (tests/integration/test_stepped_stress.py). Episodes
         # are deterministic, so a retry after any other transient failure is sound; it is announced.
@@ -48,12 +72,13 @@ async def one(
                 *([] if safety else ["--no-safety"]),
                 stdout=asyncio.subprocess.PIPE,
             )  # fmt: skip
-            stdout, _ = await proc.communicate()
+            stdout, _ = await proc.communicate()  # wait for it to finish, collect its output
             if proc.returncode == 0:
                 break
             print(f"tier {tier} seed {seed}: attempt {attempt} failed", flush=True)
-        else:
+        else:  # for/else: runs only if the loop never hit `break` (every attempt failed)
             raise RuntimeError(f"episode tier {tier} seed {seed} failed (see its traceback above)")
+        # run_episode prints its result as the last stdout line: save it as <stem>.json.
         stem.with_suffix(".json").write_text(stdout.decode().strip().splitlines()[-1])
     result: dict[str, Any] = json.loads(stem.with_suffix(".json").read_text())
     return result
@@ -67,8 +92,16 @@ async def main(
     port_base: int,
     safety: bool = True,
 ) -> None:
+    """Run all (tier, seed) jobs, `workers` at a time, then print the summary table."""
     out.mkdir(parents=True, exist_ok=True)
-    sem = asyncio.Semaphore(workers)
+    from luminary_agent.agc.build import listing_path
+    from luminary_agent.agc.symbols import load_symbols
+    from luminary_agent.sim.snapshot import ensure_snapshot
+
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    await ensure_snapshot(out / "snapshot_build", port_base, load_symbols(listing_path()))
+    sem = asyncio.Semaphore(workers)  # at most `workers` episodes inside `async with sem`
 
     async def guarded(i: int, t: int, s: int) -> dict[str, Any]:
         async with sem:
@@ -89,6 +122,7 @@ async def main(
         )
         return r
 
+    # Start every job concurrently; the semaphore throttles them. gather waits for all.
     results = await asyncio.gather(*(guarded(i, t, s) for i, (t, s) in enumerate(jobs)))
     failed = [r for r in results if "error" in r]
     soft = sum(1 for r in results if "error" not in r and r["score"]["soft_touchdown"])

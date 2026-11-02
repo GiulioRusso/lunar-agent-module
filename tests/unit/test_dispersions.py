@@ -1,3 +1,9 @@
+"""Unit tests for scenarios/dispersions.py: determinism per (seed, tier), tier bounds, and how a
+Dispersion changes the start state and the engine.
+
+Run alone: `uv run pytest tests/unit/test_dispersions.py -v`.
+"""
+
 from luminary_agent.plant.dynamics import PlanarState
 from luminary_agent.plant.propulsion import DescentEngine
 from luminary_agent.scenarios.dispersions import FAULT_WINDOW_S, Dispersion, sample

@@ -8,13 +8,18 @@ confirmed in R02BOTH, which treats IMODES30 bit 9 == 0 as "IMU operating".
 Only the discretes Luminary's landing programs actually look at are named; everything else
 stays absent (1). yaAGC boots with channel 30 = 037777 (bit 15, stable-member temperature
 in limits, present) and 31-33 all absent, so an untouched AGC believes the IMU is off.
+
+"Discrete" = an on/off wire from spacecraft hardware (switch positions, "engine armed", "radar
+data good"...). The AGC reads 15 of them at a time as one channel word. The "plant" package
+(this folder) is the simulated spacecraft; this module is the simulated switch panel.
+Usage: `await client.write_channels(Discretes().channel_words())`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-ALL_ABSENT = 0o77777
+ALL_ABSENT = 0o77777  # all 15 bits = 1 = every signal absent (inverted logic)
 
 
 def _bit(n: int) -> int:
@@ -24,6 +29,8 @@ def _bit(n: int) -> int:
 
 @dataclass
 class Discretes:
+    """Named True/False switches; channel_XX() packs them into the (inverted) channel words."""
+
     # --- channel 30 -------------------------------------------------------------
     abort_with_descent_stage: bool = False  # bit 1
     engine_armed: bool = True  # bit 3
@@ -48,6 +55,7 @@ class Discretes:
     pipa_fail: bool = False  # bit 13
 
     def channel_30(self) -> int:
+        # `flag and _bit(n)` is _bit(n) when flag is True, else False (== 0); `|` merges them.
         present = int(
             (self.abort_with_descent_stage and _bit(1))
             | (self.engine_armed and _bit(3))
@@ -61,7 +69,7 @@ class Discretes:
             | (self.iss_turn_on_requested and _bit(14))
             | (self.imu_temperature_in_limits and _bit(15))
         )
-        return ALL_ABSENT & ~present
+        return ALL_ABSENT & ~present  # invert: present signals become 0 bits
 
     def channel_31(self) -> int:
         # No rotation/translation hand-controller input; only the mode-control switch, which
@@ -85,6 +93,7 @@ class Discretes:
         return ALL_ABSENT & ~present
 
     def channel_words(self) -> dict[int, int]:
+        """{channel number: word} for all four discrete channels, ready to send."""
         return {
             0o30: self.channel_30(),
             0o31: self.channel_31(),

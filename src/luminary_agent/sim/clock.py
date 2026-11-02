@@ -1,4 +1,4 @@
-"""Simulation clocks (APOLLO_AGENT_PLAN.md Sec.3.1).
+"""Simulation clocks (CODE_REVIEW.md Sec.3.1).
 
 Design rule: nothing outside this module may sleep, read the wall clock, or assume sim-time
 equals wall-time. Everything else receives `dt` from a clock and asks it to `advance`.
@@ -11,6 +11,13 @@ SteppedClock  -- the AGC executes only when stepped, so *not* advancing the cloc
                  fixed length (~1.6 cycles each, measured), so the instruction count per tick
                  is calibrated against the AGC's own cycle counter, and any residual drift
                  between plant time and AGC time is exposed rather than hidden.
+
+Three clocks exist in this project; do not confuse them:
+  * wall time   -- your computer's real clock (time.perf_counter / loop.time()).
+  * sim time    -- seconds of simulated flight (`sim_time_s`), advanced by `advance(dt)`.
+  * AGC time    -- the emulated computer's cycle counter (85,333 cycles per AGC second).
+In stepped mode the AGC does not run between our calls, so sim time and AGC time move together
+and wall time is irrelevant: a slow agent does not "fall behind" the spacecraft.
 """
 
 from __future__ import annotations
@@ -25,6 +32,8 @@ INITIAL_CYCLES_PER_INSTRUCTION = 1.62  # measured on Luminary099 idle; recalibra
 
 
 class SimClock(Protocol):
+    """Interface ("duck type") both clocks satisfy: anything with sim_time_s and advance()."""
+
     sim_time_s: float
 
     async def advance(self, dt_s: float) -> None:
@@ -33,6 +42,8 @@ class SimClock(Protocol):
 
 
 class RealtimeClock:
+    """Sim time follows wall time: advance() sleeps until the wall clock catches up."""
+
     def __init__(self) -> None:
         self.sim_time_s = 0.0
         self.lag_s = 0.0  # >0: behind schedule (the tick took longer than dt allowed)
@@ -43,6 +54,7 @@ class RealtimeClock:
         if self._origin is None:
             self._origin = loop.time()
         self.sim_time_s += dt_s
+        # Wall-clock moment this sim time is due, minus now: >0 = early (sleep), <0 = late.
         remaining = self._origin + self.sim_time_s - loop.time()
         self.lag_s = max(0.0, -remaining)
         if remaining > 0:
@@ -50,6 +62,8 @@ class RealtimeClock:
 
 
 class SteppedClock:
+    """Sim time drives the AGC: advance(dt) runs the AGC instructions that fill dt seconds."""
+
     def __init__(self, agc: AgcProcess, calibrate_every_s: float = 1.0) -> None:
         self.agc = agc
         self.calibrate_every_s = calibrate_every_s
@@ -73,6 +87,7 @@ class SteppedClock:
         self._origin_cycles = self._est_cycles = self._sync_cycles = dump.cycle_counter
 
     async def _calibrate(self) -> None:
+        """Read the true cycle counter and re-measure cycles/instruction since the last sync."""
         dump = await self.agc.coredump()
         if self._sync_instructions > 0:
             self.cycles_per_instruction = (
@@ -84,7 +99,10 @@ class SteppedClock:
         self._last_sync_sim_s = self.sim_time_s
 
     async def advance(self, dt_s: float) -> None:
+        """Advance sim time by dt_s and step the AGC by the matching number of instructions."""
         self.sim_time_s += dt_s
+        # Where the AGC's cycle counter should be now, how far it is from there, and how many
+        # instructions that is at the current cycles-per-instruction estimate.
         target_cycles = self._origin_cycles + self.sim_time_s * AGC_CYCLES_PER_SECOND
         needed_cycles = target_cycles - self._est_cycles
         instructions = max(1, round(needed_cycles / self.cycles_per_instruction))

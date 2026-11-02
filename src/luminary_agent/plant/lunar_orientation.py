@@ -23,13 +23,19 @@ direction of the LAND vector a real yaAGC computed (tests/unit/test_lunar_orient
 "Moon-fixed == inertial" assumption misses. The residual is not explained by any sign or
 transposition variant tried; it is plausibly the guidance loop's own per-pass rotation of the
 site. It is a measured model gap, not a claim of exactness.
+
+Plain words: the Moon spins, so a point on its surface (the landing site) moves in inertial
+space. "Moon-fixed" coordinates rotate with the Moon; "reference"/inertial ones do not. This
+module gives the 3x3 rotation matrix between them at any time, exactly as the AGC computes it,
+so the site we tell the AGC and the site the plant uses agree. Vectors are plain 3-tuples and
+matrices 3-tuples of rows (no numpy) to mirror the flight code step by step.
 """
 
 from __future__ import annotations
 
 import math
 
-TAU = 2.0 * math.pi
+TAU = 2.0 * math.pi  # one revolution in radians
 
 # CONTROLLED_CONSTANTS.agc. Angles in revolutions; rates stored as B+28 (B+27 for FDOT) in
 # revolutions per centisecond.
@@ -49,10 +55,12 @@ Mat = tuple[Vec, Vec, Vec]
 
 
 def _scale(v: Vec, k: float) -> Vec:
+    """k * v."""
     return (v[0] * k, v[1] * k, v[2] * k)
 
 
 def _add(a: Vec, b: Vec) -> Vec:
+    """a + b."""
     return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
 
@@ -61,9 +69,11 @@ def moon_matrix(t_cs: float, t0_cs: float = 0.0) -> Mat:
     centiseconds; `t0_cs` is TEPHEM (ephemeris time at AGC zero), zero after a fresh start.
     """
     t = t_cs + t0_cs
+    # The three angles (revolutions -> radians), each a start value plus rate * time.
     g = (NODIO + NODDOT_REV_CS * t) * TAU
     f = (FSUBO + FDOT_REV_CS * t) * TAU
     b = (BSUBO + BDOT_REV_CS * t) * TAU
+    # Build the rows exactly as in the module docstring's formulas.
     cg, sg, cb, sb = math.cos(g), math.sin(g), math.cos(b), math.sin(b)
     a_vec: Vec = (cg, cb * sg, sb * sg)
     b_vec: Vec = (-sg, cb * cg, sb * cg)
@@ -76,6 +86,7 @@ def moon_matrix(t_cs: float, t0_cs: float = 0.0) -> Mat:
 
 
 def _mv(m: Mat, v: Vec) -> Vec:
+    """Matrix times vector, M v."""
     return (
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
         m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],

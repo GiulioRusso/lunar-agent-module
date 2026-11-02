@@ -1,3 +1,8 @@
+"""Unit tests for plant/surface.py: speed relative to the rotating Moon and downrange error sign.
+
+Run alone: `uv run pytest tests/unit/test_surface.py -v`.
+"""
+
 import math
 
 import pytest

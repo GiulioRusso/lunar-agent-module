@@ -1,4 +1,10 @@
-"""The decision trigger fires on what changes a decision, and no more often than the floor."""
+"""The decision trigger fires on what changes a decision, and no more often than the floor.
+
+Tests sim/events.py:Trigger. `obs(t, **kw)` builds an Observation at time t, overriding any
+field by keyword; `fire` asks the trigger and, if it fires, records the decision like the loop.
+
+Run alone: `uv run pytest tests/unit/test_events.py -v`.
+"""
 
 from __future__ import annotations
 

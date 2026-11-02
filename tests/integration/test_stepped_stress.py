@@ -3,6 +3,14 @@
 The upstream `nbfgets` input thread had a lost-wakeup race (patches/yaagc-free-run.patch): with
 commands arriving back to back under CPU load, ~1 in 16 processes stopped reading its pipe and the
 caller's STEP timed out. The stall is probabilistic, so a pass is evidence, not proof.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_stepped_stress.py -v`.
 """
 
 from __future__ import annotations

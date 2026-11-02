@@ -1,3 +1,11 @@
+"""Unit tests for sim/loop.py:Simulation's throttle and thrust-direction handling, with fakes
+instead of a real AGC: FakeClient (records PIPA pulses, exposes an ActuatorState the test flips
+engine_on on), FakeClock (just adds dt), and a guidance reader that plays back a scripted list
+of GuidanceSamples. That isolates the loop's logic from the emulator entirely.
+
+Run alone: `uv run pytest tests/unit/test_loop_throttle.py -v`.
+"""
+
 import asyncio
 import math
 from typing import Any
@@ -14,10 +22,14 @@ from luminary_agent.sim.loop import PipaAxes, Simulation
 
 
 class FakeDsky:
+    """A blank display (every field None)."""
+
     program_number = verb_number = noun_number = r1 = r2 = r3 = None
 
 
 class FakeClient:
+    """Stands in for AgcClient: engine state is set by the test, pulses are recorded."""
+
     def __init__(self) -> None:
         self.actuators = ActuatorState()
         self.dsky = FakeDsky()
@@ -28,6 +40,8 @@ class FakeClient:
 
 
 class FakeClock:
+    """Stands in for SteppedClock: no AGC to step, time just advances."""
+
     def __init__(self) -> None:
         self.sim_time_s = 0.0
 
@@ -60,10 +74,13 @@ def _sim(
 
 
 def run(coro: Any) -> Any:
+    """Run a coroutine to completion from synchronous test code."""
     return asyncio.run(coro)
 
 
 def _ticks(sim: Simulation, n: int) -> list[float]:
+    """Tick `n` times; return the thrust of each tick."""
+
     async def go() -> list[float]:
         return [(await sim.tick())["thrust_n"] for _ in range(n)]
 
@@ -179,6 +196,7 @@ def test_actuator_without_a_reader_is_rejected() -> None:
 
 
 def _direction_sim(theta_x: float = 0.0) -> Simulation:
+    """A Simulation placed at angle theta_x around the Moon, for _apply_direction tests."""
     client = FakeClient()
     return Simulation(
         client,  # type: ignore[arg-type]

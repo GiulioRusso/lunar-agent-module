@@ -9,6 +9,11 @@ Two modes share one renderer and one event loop:
 
 The window never touches the simulation's clock: pausing here pauses the *view* (frames keep being
 collected), and closing it does not stop the episode.
+
+Keys: SPACE pause, LEFT/RIGHT scrub 5 s (SHIFT: 30 s), UP/DOWN speed, HOME/END start/end,
+1/2/3 camera, ESC or Q quit.
+pygame basics: every frame, read input events, update state, draw on `screen`, then
+`pygame.display.flip()` to show it; `clock.tick(FPS)` waits so the loop runs ~30 times a second.
 """
 
 from __future__ import annotations
@@ -26,9 +31,9 @@ from luminary_agent.viz.native_renderer import CAMERAS, SIZE, NativeRenderer
 from luminary_agent.viz.replay import Episode, load_episode
 from luminary_agent.viz.view_model import ViewFrame
 
-FPS = 30
-SPEEDS = (0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
-SCRUB_S = 5.0
+FPS = 30  # window refresh rate
+SPEEDS = (0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)  # replay speeds (x simulated time)
+SCRUB_S = 5.0  # seconds jumped by one arrow-key press
 
 
 def verdict_text(
@@ -63,21 +68,36 @@ class Player:
         self.paused = False
 
     def advance(self, wall_dt: float) -> None:
+        """Move the playback position by wall_dt * speed (clamped at the last frame)."""
         if self.live or self.paused or not self.frames:
             return
         self.t_s = min(self.t_s + wall_dt * self.speed, self.frames[-1].t_s)
 
     def scrub(self, delta_s: float) -> None:
+        """Jump by delta_s (leaves live mode)."""
         self.live = False
         if self.frames:
             self.t_s = min(max(self.t_s + delta_s, self.frames[0].t_s), self.frames[-1].t_s)
 
+    def step_decision(self, direction: int) -> None:
+        if not self.frames:
+            return
+        current = self.frames[self.index].decision_t_s
+        anchor = current if current is not None else self.frames[self.index].t_s
+        times = sorted({f.decision_t_s for f in self.frames if f.decision_t_s is not None})
+        candidates = [t for t in times if (t - anchor) * direction > 1e-6]
+        self.live, self.paused = False, True
+        if candidates:
+            self.t_s = min(candidates) if direction > 0 else max(candidates)
+
     def faster(self, direction: int) -> None:
+        """Next (+1) or previous (-1) speed in SPEEDS."""
         i = SPEEDS.index(self.speed) if self.speed in SPEEDS else 1
         self.speed = SPEEDS[min(max(i + direction, 0), len(SPEEDS) - 1)]
 
     @property
     def index(self) -> int:
+        """Index of the frame to draw (binary search on frame time)."""
         if not self.frames:
             return 0
         if self.live:
@@ -93,6 +113,8 @@ class Player:
 
 
 def _open_window(title: str, headless: bool) -> pygame.Surface:
+    """Create the window. headless: SDL's "dummy" video driver, i.e. draw off-screen (tests,
+    screenshots, machines without a display)."""
     if headless:
         os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
@@ -108,8 +130,9 @@ def _loop(
     """The event loop. `tick` runs once per frame and returns True to leave the loop."""
     clock = pygame.time.Clock()
     camera = 1
+    inspect = False
     while True:
-        dt = clock.tick(FPS) / 1000.0
+        dt = clock.tick(FPS) / 1000.0  # wall seconds since the previous frame
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (
                 event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_q)
@@ -117,10 +140,14 @@ def _loop(
                 return
             if event.type != pygame.KEYDOWN:
                 continue
-            big = 6 if event.mod & pygame.KMOD_SHIFT else 1
+            big = 6 if event.mod & pygame.KMOD_SHIFT else 1  # SHIFT = 6x bigger jumps
             if event.key == pygame.K_SPACE:
                 player.paused = not player.paused
                 player.live = player.live and not player.paused
+            elif event.key == pygame.K_i:
+                inspect = not inspect
+            elif event.key in (pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET):
+                player.step_decision(-1 if event.key == pygame.K_LEFTBRACKET else 1)
             elif event.key == pygame.K_LEFT:
                 player.scrub(-SCRUB_S * big)
             elif event.key == pygame.K_RIGHT:
@@ -134,15 +161,18 @@ def _loop(
             elif event.key == pygame.K_END:
                 player.scrub(1e9)
             elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
-                camera = event.key - pygame.K_0
+                camera = event.key - pygame.K_0  # key "1" -> 1, etc.
         if tick is not None and tick(player):
             return
         player.advance(dt)
         renderer.draw(screen, player.frames, player.index, camera, label(player), verdict())
+        if inspect and player.frames:
+            renderer.draw_inspector(screen, player.frames[player.index])
         pygame.display.flip()
 
 
 def run_replay(episode: Episode, headless: bool = False) -> None:
+    """Open a window and play a recorded episode (`luminary view`). Returns when closed."""
     screen = _open_window(episode.title, headless)
     renderer = NativeRenderer(episode.surface)
     player = Player(episode.frames)
@@ -164,6 +194,8 @@ def run_replay(episode: Episode, headless: bool = False) -> None:
 
 @dataclass
 class LiveState:
+    """Mutable flags shared by run_live's inner functions."""
+
     replay: bool = False  # the run ended and the window now shows its log
     verdict: str | None = None
 
@@ -178,6 +210,7 @@ def run_live(
     player = Player([], live=True)
     state = LiveState()
 
+    # Called once per window frame: pull new frames; on "end", swap to the full-resolution log.
     def tick(p: Player) -> bool:
         if state.replay:
             return False
@@ -190,7 +223,7 @@ def run_live(
                 return False
             state.verdict = verdict_text(episode.landing, reader.summary)
             p.frames, p.live, p.paused = episode.frames, False, True
-            p.t_s = episode.frames[-1].t_s
+            p.t_s = episode.frames[-1].t_s if episode.frames else 0.0
             state.replay = True
         return False
 
@@ -203,7 +236,9 @@ def run_live(
     pygame.quit()
 
 
-def screenshot(episode: Episode, t_s: float, out: Path, camera: int = 1) -> None:
+def screenshot(
+    episode: Episode, t_s: float, out: Path, camera: int = 1, inspect: bool = False
+) -> None:
     """Render one frame of a recorded episode to a PNG, with no visible window."""
     _open_window(episode.title, headless=True)
     screen = pygame.display.get_surface()
@@ -219,5 +254,7 @@ def screenshot(episode: Episode, t_s: float, out: Path, camera: int = 1) -> None
         "SNAPSHOT",
         verdict_text(episode.landing) if last else None,
     )
+    if inspect and episode.frames:
+        renderer.draw_inspector(screen, episode.frames[index])
     pygame.image.save(screen, str(out))
     pygame.quit()

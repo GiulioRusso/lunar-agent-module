@@ -1,9 +1,17 @@
-"""Gate 1a (APOLLO_AGENT_PLAN.md ledger): plant coasting, discretes asserted, AGC alive in
+"""Gate 1a (CODE_REVIEW.md ledger): plant coasting, discretes asserted, AGC alive in
 P00 with no alarms, every tick recorded, plant and AGC time together.
 
 The plant starts on a circular orbit at 15 km, i.e. at PDI-like speed with no thrust: a flat
 plant would plunge, the spherical one must hold altitude -- so this doubles as an end-to-end
 check that the polar dynamics are what the loop actually runs.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_sim_loop_coasting.py -v`.
 """
 
 from __future__ import annotations

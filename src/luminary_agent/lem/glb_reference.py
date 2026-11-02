@@ -4,10 +4,14 @@ The GLB is a *measurement reference only*: nothing is rendered from it and it is
 the simulator. This tool reads it (Draco decode needs the optional `DracoPy`), rescales it so its
 overall height equals the documented 7.04 m, and writes a small JSON of derived numbers: silhouette
 hulls in three views, pad layout and a half-width profile. Tests compare the procedural model
-against them. See docs/lem-model-sources.md ("GLB reference").
+against them. See CODE_REVIEW.md ("GLB reference").
 
     uv run --with DracoPy python -m luminary_agent.lem.glb_reference \
         "docs/Apollo Lunar Module.glb" docs/lem-glb-reference.json
+
+GLB file layout (read by hand below): 12-byte header, then chunks of [length, type, data];
+the "JSON" chunk describes the scene (nodes, meshes, materials), the "BIN" chunk holds the
+(Draco-compressed) geometry bytes.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ VIEWS = {"front": (1, 2), "side": (0, 2), "top": (0, 1)}  # (horizontal, vertica
 
 
 def _mat(node: dict[str, Any]) -> np.ndarray:
+    """4x4 transform of one glTF node (either given directly, or rotation quaternion x scale +
+    translation). Multiplying parent @ child gives the node's placement in the world."""
     if "matrix" in node:
         return np.array(node["matrix"]).reshape(4, 4).T
     m = np.eye(4)
@@ -46,14 +52,16 @@ def load_parts(path: Path) -> list[dict[str, Any]]:
     import DracoPy  # type: ignore[import-not-found,unused-ignore]  # optional dev dependency
 
     data = path.read_bytes()
-    off, chunks = 12, {}
+    off, chunks = 12, {}  # skip the 12-byte file header
     while off < len(data):
+        # "<I4s": little-endian 4-byte length + 4-byte chunk type.
         n, kind = struct.unpack("<I4s", data[off : off + 8])
         chunks[kind] = data[off + 8 : off + 8 + n]
         off += 8 + n
     gltf, binary = json.loads(chunks[b"JSON"]), chunks[b"BIN\x00"]
     out: list[dict[str, Any]] = []
 
+    # Depth-first walk of the scene tree, accumulating transforms from the root.
     def walk(i: int, parent: np.ndarray) -> None:
         node = gltf["nodes"][i]
         m = parent @ _mat(node)
@@ -92,15 +100,18 @@ def to_model_frame(v: np.ndarray) -> np.ndarray:
 
 
 def measure(path: Path) -> dict[str, Any]:
+    """Derive the reference numbers (height, gear span, pads, silhouettes, profile)."""
     raw = load_vertices(path)
     g = to_model_frame(raw)
     k = DOC_HEIGHT_M / float(raw[:, 1].max() - raw[:, 1].min())
+    # Footpads: vertices near the ground and far from the centre, grouped by direction.
     low = g[(g[:, 2] < 0.16 * k) & (np.hypot(g[:, 0], g[:, 1]) > 2.5)]
     pads = {}
     for name, sel in (("+x", low[:, 0] > 1), ("-x", low[:, 0] < -1), ("+y", low[:, 1] > 1),
                       ("-y", low[:, 1] < -1)):  # fmt: skip
         c = low[sel].mean(0)
         pads[name] = [round(float(c[0]), 2), round(float(c[1]), 2)]
+    # Width of the vehicle in 0.5 m horizontal slices, bottom to top.
     profile = []
     for lo in np.arange(0.0, DOC_HEIGHT_M, 0.5):
         m = (g[:, 2] >= lo) & (g[:, 2] < lo + 0.5)

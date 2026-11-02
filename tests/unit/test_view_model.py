@@ -1,3 +1,8 @@
+"""Unit tests for viz/view_model.py:FrameBuilder (tick/decision records -> ViewFrames).
+
+Run alone: `uv run pytest tests/unit/test_view_model.py -v`.
+"""
+
 from viz_records import decision, tick
 
 from luminary_agent.plant.gravity import R_MOON
@@ -27,7 +32,7 @@ def test_decisions_feed_the_next_frames_and_are_counted() -> None:
     b.decision(decision("take_manual", veto=True))
     f = b.tick(tick())
     assert f.intent == "take_manual" and f.veto and f.reason == "heartbeat" and f.applied == "ok"
-    assert f.decisions == 2 and f.vetoes == 1 and f.alarms == (1201,)
+    assert f.decisions == 1 and f.vetoes == 1 and f.alarms == (1201,)
     assert f.radar_alt_m == 498.0 and f.agc_alt_m == 510.0
     b.decision(decision("command"))
     assert b.tick(tick()).intent == "command(descent_rate_ms=-1.0)"

@@ -5,7 +5,10 @@ specific impulse (311 s) is an Apollo-class value, not read from the flight soft
 
 The DPS is not continuously throttleable across its whole range: it can be commanded
 anywhere from 10%-60% of rated thrust, but between 60% and a fixed ~92.5% detent the
-engine is unstable and jumps straight to the detent (APOLLO_AGENT_PLAN.md Sec.5, Phase 1).
+engine is unstable and jumps straight to the detent (CODE_REVIEW.md Sec.5, Phase 1).
+
+Rocket basics: thrust (N) pushes the LM; burning propellant makes it lighter. Specific impulse
+(Isp, seconds) measures efficiency: mass flow = thrust / (g0 * Isp).
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from dataclasses import dataclass
 G0 = 9.80665  # m/s^2, standard gravity used to define specific impulse
 
 ISP_S = 311.0  # vacuum specific impulse, s
+# Throttle fractions of 100% rated thrust.
 THROTTLE_MIN = 0.10
 THROTTLE_MAX_VARIABLE = 0.60
 THROTTLE_FIXED_DETENT = 0.925
@@ -50,6 +54,8 @@ def resolve_throttle(commanded: float) -> float:
 
 @dataclass(frozen=True)
 class DescentEngine:
+    """The engine's two parameters; thrust_and_mdot turns a throttle into force + fuel use."""
+
     f_max_n: float = F_MAX_N
     isp_s: float = ISP_S
 

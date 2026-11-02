@@ -1,4 +1,4 @@
-"""DSKY keying on a *stepped* AGC (APOLLO_AGENT_PLAN.md Sec.3.1).
+"""DSKY keying on a *stepped* AGC (CODE_REVIEW.md Sec.3.1).
 
 Every keystroke is followed by stepping the AGC: a keycode waits in channel 015 until
 Luminary's KEYRUPT reads it and the next write would overwrite it, so keys cannot be fired
@@ -7,6 +7,10 @@ back-to-back (found the hard way -- see tests/integration/test_stepped_mode.py).
 Numeric entry is split into `enter_octal` and `enter_decimal` on purpose: P27 data words are
 octal keystrokes, but V37's program number is decimal. Formatting one as the other silently
 selects a different program (typing 21 through an octal formatter enters 25).
+
+"Stepping" = the AGC is frozen and only runs when we tell it "execute N instructions"
+(AgcProcess.step). So after pressing a key we must let it run a bit, or it never sees the key.
+One AGC instruction takes ~11.7 microseconds, so 3000 steps ~= 35-50 ms of AGC time.
 """
 
 from __future__ import annotations
@@ -48,19 +52,23 @@ class SteppedDsky:
         return await self.agc.step(steps)
 
     async def key(self, key: str, steps: int = KEY_STEPS) -> None:
+        """Press one key and let the AGC run long enough to read it."""
         await self.client.press_key(key)
         await self._advance(steps)
         await asyncio.sleep(0.005)  # let the socket reader drain any display updates
 
     async def enter(self, digits: str) -> None:
+        """Type a string of digit keys, then ENTR."""
         for digit in digits:
             await self.key(digit)
         await self.key("ENTR", ENTER_STEPS)
 
     async def enter_octal(self, value: int) -> None:
+        """Type `value` in base 8 (e.g. 8 -> keys "1", "0")."""
         await self.enter(f"{value:o}")
 
     async def enter_decimal(self, value: int) -> None:
+        """Type `value` in base 10."""
         await self.enter(str(value))
 
     async def verb(self, verb: int) -> None:

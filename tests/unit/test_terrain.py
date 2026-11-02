@@ -1,3 +1,9 @@
+"""Unit tests for plant/terrain.py: seeded surfaces, the clear target, slope maths and the
+hazard/slope/target verdict that mission_success is built on.
+
+Run alone: `uv run pytest tests/unit/test_terrain.py -v`.
+"""
+
 import json
 import math
 

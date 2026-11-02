@@ -1,10 +1,21 @@
 """Asyncio TCP client for yaAGC's channel I/O socket protocol.
 
 yaAGC opens several equivalent listening ports starting at --port (default 19697,
-19797 by LM convention -- see APOLLO_AGENT_PLAN.md Sec.3); any client connecting to any
+19797 by LM convention -- see CODE_REVIEW.md Sec.3); any client connecting to any
 one of them sees every channel write broadcast to it and can write channels back
 (SocketAPI.c: ChannelRoutineGeneric opens MAX_CLIENTS identical server sockets). One
 connection is therefore enough for both DSKY keying and reading back the display.
+
+Primer (Python-only reader):
+  * TCP socket: a two-way byte stream between two programs, here over 127.0.0.1 (this machine).
+    yaAGC is the *server* (listens on a port number); this class is the *client* (connects).
+    asyncio.open_connection gives a StreamReader (bytes in) and StreamWriter (bytes out).
+  * The real AGC talked to the spacecraft through numbered "I/O channels" (each a 15-bit word).
+    yaAGC turns every channel write into a 4-byte packet on the socket (channels.py), both ways:
+    the AGC's outputs (display digits, engine on/off, ...) come to us; our inputs (key presses,
+    accelerometer and gimbal-angle pulses) go to it.
+  * A background asyncio Task (`_read_loop`) runs forever, reading packets as they arrive and
+    updating `self.dsky` / `self.actuators`, so the rest of the code just reads those fields.
 """
 
 from __future__ import annotations
@@ -34,13 +45,16 @@ class AgcClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._read_task: asyncio.Task[None] | None = None
+        # Shared with the AgcProcess on the same port; see handshake.py.
         self.handshake = handshake.register(port)
 
     async def connect(self) -> None:
+        """Open the TCP connection and start the background packet reader."""
         self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
         self._read_task = asyncio.create_task(self._read_loop())
 
     async def close(self) -> None:
+        """Stop the reader task and close the socket."""
         handshake.unregister(self.port)
         if self._read_task is not None:
             self._read_task.cancel()
@@ -49,27 +63,31 @@ class AgcClient:
             await self._writer.wait_closed()
 
     async def _read_loop(self) -> None:
+        """Runs until cancelled: one 4-byte packet per iteration, folded into our state."""
         assert self._reader is not None
         while True:
-            packet = await self._reader.readexactly(4)
+            packet = await self._reader.readexactly(4)  # every packet is exactly 4 bytes
             if packet == b"\xff\xff\xff\xff":
                 continue  # yaAGC's periodic liveness probe, not a channel write
             try:
                 channel, value, _u_bit = decode_packet(packet)
             except ValueError:
-                continue
+                continue  # malformed packet: ignore it rather than kill the reader
             if channel == handshake.SYNC_CHANNEL:  # yaAGC's end-of-command marker
                 self.handshake.marker_seen()
                 continue
+            # Each decoder ignores the channels it does not care about.
             self.dsky.apply_channel(channel, value)
             self.actuators.apply_channel(channel, value)
 
     def _write(self, packet: bytes) -> None:
+        """Queue bytes for sending (not yet flushed: callers `await drain()`)."""
         assert self._writer is not None
         self._writer.write(packet)
         self.handshake.bytes_sent += len(packet)  # yaAGC waits for these before it steps
 
     async def write_channel(self, channel: int, value: int, u_bit: bool = False) -> None:
+        """Set one AGC input channel to `value` (see channels.py for `u_bit`)."""
         assert self._writer is not None
         self._write(encode_packet(channel, value, u_bit))
         await self._writer.drain()
@@ -86,6 +104,8 @@ class AgcClient:
         await self.write_channel(0o15, KEYCODE[key])
 
     async def key_sequence(self, keys: list[str], delay_s: float = 0.1) -> None:
+        """Press keys with a wall-clock pause between them (realtime mode only; a stepped AGC
+        does not run while we sleep -- use stepped_dsky.SteppedDsky there)."""
         for key in keys:
             await self.press_key(key)
             await asyncio.sleep(delay_s)
@@ -101,6 +121,7 @@ class AgcClient:
         await self._send_packets(cdu_pulse_packets(register, pulse_count, fast))
 
     async def _send_packets(self, packets: list[bytes]) -> None:
+        """Queue a batch of packets and flush once (much faster than one drain per packet)."""
         assert self._writer is not None
         for packet in packets:
             self._write(packet)

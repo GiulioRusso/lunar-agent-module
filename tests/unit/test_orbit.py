@@ -1,3 +1,9 @@
+"""Unit tests for plant/orbit.py (Kepler ellipse): conservation laws, the perilune-speed solver,
+and agreement with the RK4 plant integrating the same orbit.
+
+Run alone: `uv run pytest tests/unit/test_orbit.py -v`.
+"""
+
 import math
 
 import pytest

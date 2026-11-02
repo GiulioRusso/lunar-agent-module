@@ -1,3 +1,9 @@
+"""Unit tests for eval/sets.py (set sizes, dev/frozen seeds disjoint) and eval/report.py
+(summary and comparison tables built from fabricated result JSON files in `tmp_path`).
+
+Run alone: `uv run pytest tests/unit/test_eval_sets.py -v`.
+"""
+
 import json
 from pathlib import Path
 

@@ -2,17 +2,24 @@
 
 Layout (1280 x 720):  left, the lunar scene (LM mesh, grid, target, hazards, trail, plume) over the
 descent profile and the radar-vs-AGC altitude strip; right, the AGC/DSKY, telemetry, the policy's
-latest decision and a legend saying what is real data and what is drawing.
+decision inspector with trigger, action, summary and execution feedback.
 
 **Real data** (from the plant, the AGC and the log): position, altitude, velocities, mass, thrust,
 pitch, DSKY, alarms, radar/AGC altitudes, intents, vetoes, the target and the seeded hazards.
 **Cosmetic**: the LM mesh detail (NASA model, simplified), the plume, the ground tint and the grid.
 The contact plane is altitude 0; relief is shown only as a tint of the grid lines by local slope.
+
+3-D drawing primer: the scene uses world coordinates X = downrange (m, target at 0), Y = up
+(altitude), Z = cross-range. A Camera has a position (`eye`) and three unit axes (right, up,
+fwd). A world point is expressed in camera axes (`to_cam`), then projected with perspective:
+screen_x = cx + focal * x / depth (`screen`). Everything behind the NEAR plane is clipped away.
+The LM itself is a pre-rendered picture ("sprite") of the mesh, cached per viewing angle.
 """
 
 from __future__ import annotations
 
 import math
+import textwrap
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,12 +32,14 @@ from luminary_agent.lem.mesh import LemMesh, load_lem_mesh
 from luminary_agent.plant.terrain import CLEAR_RADIUS_M, TARGET_RADIUS_M, Surface
 from luminary_agent.viz.view_model import ViewFrame
 
+# Window size and the screen rectangles (x, y, width, height) of each panel.
 SIZE = (1280, 720)
 SCENE = pygame.Rect(0, 0, 800, 470)
 PROFILE = pygame.Rect(0, 470, 470, 250)
 STRIP = pygame.Rect(470, 470, 330, 250)
 PANEL_X = 800
 
+# Colours as (red, green, blue), 0-255.
 BG = (10, 11, 13)
 PANEL_BG = (16, 17, 20)
 LINE = (52, 54, 58)
@@ -44,17 +53,19 @@ ALARM = (238, 72, 62)
 DSKY = (112, 236, 140)
 
 CAMERAS = {1: "chase", 2: "ground", 3: "top"}
-SPRITE_PX_PER_M = 30.0
+SPRITE_PX_PER_M = 30.0  # resolution the LM sprite is drawn at
 CAMERA_DIST_M = 32.0  # chase and top cameras keep this distance from the LM, at any altitude
-SPRITE_CACHE = 160
-NEAR = 0.5
+SPRITE_CACHE = 160  # how many LM pictures (angle combinations) to keep in memory
+NEAR = 0.5  # metres: anything closer to the camera than this is not drawn
 LEM_BELL = np.array([0.0, 0.0, 0.45])  # engine exit, mesh frame
 LEM_LIGHT = np.array([-0.4, 0.7, 0.6]) / np.linalg.norm([-0.4, 0.7, 0.6])
-NICE = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
+NICE = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)  # "round" grid spacings, m
 
 
 @dataclass(frozen=True)
 class Camera:
+    """A perspective camera: position, orthonormal axes, focal length (px), screen centre."""
+
     eye: NDArray[np.float64]
     right: NDArray[np.float64]
     up: NDArray[np.float64]
@@ -68,6 +79,7 @@ class Camera:
         cls, eye: NDArray[np.float64], target: NDArray[np.float64], rect: pygame.Rect,
         up_hint: tuple[float, float, float] = (0.0, 1.0, 0.0), fov_deg: float = 50.0,
     ) -> Camera:  # fmt: skip
+        """Camera at `eye` pointing at `target`; `up_hint` fixes which way is up on screen."""
         fwd = target - eye
         fwd = fwd / np.linalg.norm(fwd)
         right = np.cross(fwd, np.array(up_hint))
@@ -76,10 +88,12 @@ class Camera:
         return cls(eye, right, np.cross(right, fwd), fwd, focal, rect.centerx, rect.centery)
 
     def to_cam(self, p: NDArray[np.float64]) -> NDArray[np.float64]:
+        """World points (..., 3) -> camera coordinates (x right, y up, z = depth)."""
         d = p - self.eye
         return np.stack([d @ self.right, d @ self.up, d @ self.fwd], axis=-1)
 
     def screen(self, c: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Camera coordinates -> pixel coordinates (perspective divide by depth)."""
         z = np.maximum(c[..., 2], 1e-6)
         return np.stack(
             [self.cx + self.focal * c[..., 0] / z, self.cy - self.focal * c[..., 1] / z], -1
@@ -114,10 +128,12 @@ def _line(
 
 
 def _nice(x: float) -> float:
+    """Smallest "round" number >= x (for grid spacing)."""
     return next((n for n in NICE if n >= x), NICE[-1])
 
 
 def _rot_z(deg: float) -> NDArray[np.float64]:
+    """3x3 rotation matrix about the z axis (used to pitch the LM)."""
     a = math.radians(deg)
     return np.array([[math.cos(a), -math.sin(a), 0], [math.sin(a), math.cos(a), 0], [0, 0, 1]])
 
@@ -127,6 +143,8 @@ MESH_TO_WORLD = np.array([[1.0, 0, 0], [0, 0, 1.0], [0, -1.0, 0]])
 
 
 class NativeRenderer:
+    """Draws frames. Build once per window; call draw() every frame."""
+
     def __init__(self, surface: Surface | None = None) -> None:
         pygame.font.init()
 
@@ -141,7 +159,9 @@ class NativeRenderer:
         )
         self.terrain = surface
         self.mesh: LemMesh = load_lem_mesh()
+        # Precomputed slope grid (+-2.5 km, 25 m cells) used to tint the ground grid.
         self.slopes = surface.slope_map(2500.0, 25.0) if surface else None
+        # LRU cache: OrderedDict + move_to_end on hit + popitem(last=False) to evict the oldest.
         self._sprites: OrderedDict[tuple[int, int, int], tuple[pygame.Surface, tuple[int, int]]] = (
             OrderedDict()
         )
@@ -153,6 +173,7 @@ class NativeRenderer:
         """The LM seen from `cam`'s direction at this pitch, drawn once and cached: an orthographic
         picture at SPRITE_PX_PER_M, plus the pixel of the mesh origin."""
         d = cam.fwd
+        # Cache key: angles rounded to 2 degrees, so nearby views reuse the same picture.
         yaw, elev = (
             round(math.degrees(math.atan2(d[2], d[0])) / 2),
             round(math.degrees(math.asin(d[1])) / 2),
@@ -181,6 +202,7 @@ class NativeRenderer:
         wn = normal[:, 0:1] * right + normal[:, 1:2] * up + normal[:, 2:3] * fwd  # to world
         shade = 0.4 + 0.6 * np.abs(wn @ LEM_LIGHT)
         colors = np.clip(self.mesh.colors * shade[:, None], 0, 255).astype(int)
+        # Painter's algorithm: draw far triangles first so near ones cover them.
         for i in np.argsort(-tri[:, :, 2].mean(1)):  # far to near
             pygame.draw.polygon(surf, tuple(colors[i]), px[self.mesh.faces[i]].tolist())
         entry = (surf, (half, half))
@@ -190,6 +212,7 @@ class NativeRenderer:
         return entry
 
     def _draw_lem(self, screen: pygame.Surface, cam: Camera, f: ViewFrame) -> None:
+        """Plume + LM sprite scaled to its on-screen size (or a dot when very far)."""
         pos = np.array([f.downrange_m, f.h_m, f.cross_m])
         c = cam.to_cam(pos[None])[0]
         if c[2] < NEAR:
@@ -216,6 +239,7 @@ class NativeRenderer:
     def _draw_plume(
         self, screen: pygame.Surface, cam: Camera, pos: NDArray[np.float64], f: ViewFrame
     ) -> None:
+        """Two translucent triangles under the engine, longer with more throttle (cosmetic)."""
         rot = _rot_z(f.pitch_deg)
         up = rot @ np.array([0.0, 1.0, 0.0])
         side = rot @ np.array([1.0, 0.0, 0.0])
@@ -238,6 +262,7 @@ class NativeRenderer:
     # --- the ground ---------------------------------------------------------------------------
 
     def _tint(self, x: NDArray[np.float64], z: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Slope (deg) at ground points, looked up in the precomputed grid (0 outside it)."""
         if self.slopes is None:
             return np.zeros_like(x)
         n = self.slopes.shape[0]
@@ -277,6 +302,8 @@ class NativeRenderer:
     def _draw_grid(
         self, screen: pygame.Surface, cam: Camera, centre: NDArray[np.float64], dist: float
     ) -> None:
+        """Ground grid around `centre`, spacing scaled to the camera distance, tinted by slope
+        and faded with depth."""
         step = _nice(dist / 4)
         reach = 8 * step
         x0, z0 = round(centre[0] / step) * step, round(centre[2] / step) * step
@@ -309,6 +336,7 @@ class NativeRenderer:
         r: float,
         color: tuple[int, int, int],
     ) -> None:
+        """A circle of radius r on the ground at (cx, cz), drawn as 48 line segments."""
         t = np.linspace(0, 2 * math.pi, 49)
         pts = np.stack([cx + r * np.cos(t), np.zeros_like(t), cz + r * np.sin(t)], 1)
         s0, s1, _, _ = cam.segments(pts[:-1], pts[1:])
@@ -318,6 +346,7 @@ class NativeRenderer:
     def _draw_surface(
         self, screen: pygame.Surface, cam: Camera, centre: NDArray[np.float64], dist: float
     ) -> None:
+        """Grid, target rings, and the hazards near the LM."""
         self._draw_grid(screen, cam, centre, dist)
         self._ring(screen, cam, 0, 0, TARGET_RADIUS_M, TEXT)  # the mission-success circle
         self._ring(screen, cam, 0, 0, CLEAR_RADIUS_M, DIM)
@@ -337,6 +366,7 @@ class NativeRenderer:
                     )
 
     def _camera(self, which: int, f: ViewFrame, rect: pygame.Rect) -> tuple[Camera, float]:
+        """The camera for view 1 (chase), 2 (ground observer) or 3 (top); plus a scale distance."""
         pos = np.array([f.downrange_m, f.h_m, f.cross_m])
         dist = CAMERA_DIST_M
         focus = pos + np.array([0.0, 3.5, 0.0])
@@ -363,6 +393,7 @@ class NativeRenderer:
         screen.blit(self.f_small.render("TARGET", True, TEXT), (x + 10, y - 6))
 
     def _draw_trail(self, screen: pygame.Surface, cam: Camera, history: list[ViewFrame]) -> None:
+        """The path flown so far (at most ~500 segments)."""
         if len(history) < 2:
             return
         step = max(1, len(history) // 500)
@@ -373,6 +404,7 @@ class NativeRenderer:
             _line(screen, CAUTION, p, q)
 
     def _draw_scene(self, screen: pygame.Surface, history: list[ViewFrame], camera: int) -> None:
+        """The 3-D view (top-left), drawn back to front."""
         f = history[-1]
         view = screen.subsurface(SCENE)
         view.fill(BG)
@@ -399,12 +431,14 @@ class NativeRenderer:
     # --- plots --------------------------------------------------------------------------------
 
     def _plot_frame(self, screen: pygame.Surface, rect: pygame.Rect, title: str) -> pygame.Rect:
+        """Box + title for a plot; returns the inner rectangle to draw the data in."""
         pygame.draw.rect(screen, PANEL_BG, rect)
         pygame.draw.rect(screen, LINE, rect, 1)
         screen.blit(self.f_med.render(title, True, DIM), (rect.x + 10, rect.y + 6))
         return pygame.Rect(rect.x + 44, rect.y + 28, rect.w - 60, rect.h - 52)
 
     def _draw_profile(self, screen: pygame.Surface, everything: list[ViewFrame], upto: int) -> None:
+        """Altitude vs downrange for the whole flight; the part flown so far is bright."""
         area = self._plot_frame(
             screen, PROFILE, "DESCENT PROFILE  (km: downrange to target / altitude)"
         )
@@ -413,6 +447,7 @@ class NativeRenderer:
         x_lo, x_hi = min(xs.min(), -1.0), 1.0
         h_hi = max(hs.max() * 1.1, 1.0)
 
+        # Data (km) -> pixel coordinates inside `area`.
         def pt(x: float, h: float) -> tuple[int, int]:
             return (
                 int(area.x + (x - x_lo) / (x_hi - x_lo) * area.w),
@@ -437,6 +472,7 @@ class NativeRenderer:
         screen.blit(self.f_small.render("target", True, DIM), (tx - 24, ty + 6))
 
     def _draw_strip(self, screen: pygame.Surface, everything: list[ViewFrame], upto: int) -> None:
+        """Last 200 s of altitude: truth, radar, and the AGC's own estimate, overlaid."""
         area = self._plot_frame(screen, STRIP, "ALTITUDE  last 200 s")
         f = everything[upto]
         window = [g for g in everything[: upto + 1] if g.t_s >= f.t_s - 200.0]
@@ -479,6 +515,7 @@ class NativeRenderer:
     def _draw_panel(
         self, screen: pygame.Surface, f: ViewFrame, status: str, verdict: str | None
     ) -> None:
+        """Right-hand panel: DSKY, lamps, telemetry, policy decision, legend, verdict banner."""
         panel = pygame.Rect(PANEL_X, 0, SIZE[0] - PANEL_X, SIZE[1])
         pygame.draw.rect(screen, PANEL_BG, panel)
         pygame.draw.line(screen, LINE, (PANEL_X, 0), (PANEL_X, SIZE[1]))
@@ -515,7 +552,7 @@ class NativeRenderer:
             ("TIME", f"{f.t_s:8.1f} s"),
             ("ALTITUDE", f"{f.h_m:8.1f} m"),
             ("V/S", f"{f.vz_ms:+8.2f} m/s"),
-            ("H VEL", f"{f.vh_ms:+8.2f} m/s"),
+            ("H ALONG/CROSS", f"{f.vh_ms:+6.2f}/{f.cross_velocity_ms:+6.2f} m/s"),
             ("THRUST", f"{f.thrust_n:8.0f} N {f.throttle * 100:3.0f}%"),
             ("FUEL", f"{f.fuel_kg:8.0f} kg"),
             ("TARGET ERR", f"{f.target_error_m:8.0f} m"),
@@ -536,34 +573,64 @@ class NativeRenderer:
         self._text(
             screen,
             self.f_med,
-            f"POLICY  mode {f.mode.upper()}   decisions {f.decisions}   vetoes {f.vetoes}",
-            DIM,
+            f"DECISION  {f.decision_source.upper()}  {f.action_status.upper()}",
+            TEXT,
             (x, y),
         )
-        intent = f.intent or "-"
-        font = self.f_big if len(intent) <= 36 else self.f_med  # long intents shrink, not clip
-        self._text(screen, font, intent[:58], ALARM if f.veto else TEXT, (x, y + 24))
-        for n, line in enumerate(
-            _wrap(("VETO: " if f.veto else "reason: ") + (f.reason or "-"), 52)[:3]
-        ):
-            self._text(screen, self.f_med, line, ALARM if f.veto else DIM, (x, y + 54 + 18 * n))
-        self._text(screen, self.f_small, f"applied: {f.applied}"[:60], DIM, (x, y + 112))
-
-        y = 590
-        pygame.draw.line(screen, LINE, (PANEL_X, y - 6), (SIZE[0], y - 6))
-        for n, line in enumerate((
-            "REAL: plant, AGC/DSKY, log, target, hazards",
-            "DRAWN: LM mesh (NASA, simplified), plume, grid tint",
-            "3-DoF: no attitude dynamics; contact plane = altitude 0",
-        )):  # fmt: skip
-            self._text(screen, self.f_small, line, DIM, (x, y + 14 * n))
-        self._text(screen, self.f_med, status, CAUTION, (x, y + 50))
+        when = "--" if f.decision_t_s is None else f"{f.decision_t_s:.1f}s"
+        until = "--" if f.decision_valid_until_s is None else f"{f.decision_valid_until_s:.1f}s"
         self._text(
             screen,
             self.f_small,
-            "space pause  arrows scrub  up/down speed  1 2 3 camera  esc close",
+            f"at {when} | valid to {until} | latency {f.decision_latency_s:.3f}s",
             DIM,
-            (x, 700),
+            (x, y + 21),
+        )
+        decision_rows = [
+            ("ACTION: " + (f.intent or "waiting for a decision"), TEXT, 2),
+            ("TRIGGER: " + (f.reason or "--"), DIM, 1),
+            ("SUMMARY: " + (f.rationale or "No rationale supplied."), TEXT, 2),
+            (
+                "RESULT: " + (f.applied or "--"),
+                ALARM
+                if f.veto or f.action_status in {"failed", "unsupported", "rejected"}
+                else DSKY,
+                3,
+            ),
+        ]
+        line_y = y + 40
+        for text, color, max_lines in decision_rows:
+            wrapped = _wrap(text, 60)
+            visible = wrapped[:max_lines]
+            if len(wrapped) > max_lines:
+                visible[-1] = visible[-1][:56] + " ..."
+            for line in visible:
+                self._text(screen, self.f_small, line, color, (x, line_y))
+                line_y += 15
+        self._text(
+            screen,
+            self.f_small,
+            f"Agent: {f.agent_stage or '--'} | model calls {f.agent_calls} | I inspect",
+            CAUTION,
+            (x, 620),
+        )
+        available = ", ".join(f.available_actions) or "unspecified"
+        self._text(screen, self.f_small, ("At decision: " + available)[:61], DIM, (x, 635))
+        self._text(
+            screen,
+            self.f_small,
+            f"Calls {f.decisions} | overrides {f.vetoes} | mode {f.mode}",
+            DIM,
+            (x, 655),
+        )
+        self._text(screen, self.f_small, f"Sensors: {f.instrument_model}", DIM, (x, 670))
+        self._text(screen, self.f_small, status, CAUTION, (x, 685))
+        self._text(
+            screen,
+            self.f_small,
+            "space pause | arrows scrub | [ ] decisions | I inspect",
+            DIM,
+            (x, 703),
         )
         if verdict:
             box = pygame.Rect(SCENE.x + 40, 40, SCENE.w - 80, 54)
@@ -576,6 +643,66 @@ class NativeRenderer:
                 banner,
                 (box.centerx - banner.get_width() // 2, box.centery - banner.get_height() // 2),
             )
+
+    def draw_inspector(self, screen: pygame.Surface, f: ViewFrame) -> None:
+        """Operational summaries and actual outcomes; no provider reasoning trace."""
+        pygame.draw.rect(screen, BG, (20, 20, SIZE[0] - 40, SIZE[1] - 40))
+        pygame.draw.rect(screen, LINE, (20, 20, SIZE[0] - 40, SIZE[1] - 40), 2)
+        self._text(screen, self.f_med, "FLIGHT AGENT / DECISION INSPECTOR", TEXT, (40, 38))
+        self._text(
+            screen,
+            self.f_small,
+            "I close | [ / ] previous / next decision | space pause view",
+            DIM,
+            (40, 64),
+        )
+        self._text(
+            screen,
+            self.f_small,
+            f"t={f.t_s:.1f}s | {f.agent_model or 'deterministic policy'} | "
+            f"{f.agent_stage} | calls {f.agent_calls} | tokens {f.agent_tokens}",
+            CAUTION,
+            (40, 86),
+        )
+
+        def block(x: int, y: int, title: str, body: str, lines: int) -> int:
+            self._text(screen, self.f_med, title, DSKY, (x, y))
+            wrapped = _wrap(body or "--", 76)
+            visible = wrapped[:lines]
+            if len(wrapped) > lines:
+                visible[-1] = visible[-1][:72] + " ..."
+            for i, line in enumerate(visible):
+                self._text(screen, self.f_small, line, TEXT, (x, y + 24 + i * 16))
+            return y + 32 + len(visible) * 16
+
+        y = block(40, 120, "CURRENT WORKFLOW", f.agent_summary, 3)
+        y = block(40, y, "LAST ACTION / EXECUTION", f"{f.intent} -> {f.applied}", 4)
+        y = block(40, y, "OPERATIONAL RATIONALE", f.rationale, 8)
+        y = block(40, y, "EVIDENCE", " | ".join(f.agent_evidence), 7)
+        block(40, y, "GRAPH PATH", " -> ".join(f.agent_path), 2)
+        y = block(660, 120, "RISKS", " | ".join(f.agent_risks), 8)
+        y = block(660, y, "NEXT CHECK", f.agent_plan, 6)
+        y = block(
+            660,
+            y,
+            "AUTHORITY / AVAILABLE ACTIONS",
+            f"{f.mode} | {f.decision_source} | " + ", ".join(f.available_actions),
+            3,
+        )
+        y = block(660, y, "OBSERVED AT LAST DECISION", " | ".join(f.decision_observation), 4)
+        self._text(screen, self.f_med, "RECENT EXECUTION HISTORY (latest first)", DSKY, (660, y))
+        for entry in reversed(f.decision_history):
+            y += 23
+            if y > 650:
+                break
+            self._text(screen, self.f_small, entry[:76], TEXT, (660, y))
+        self._text(
+            screen,
+            self.f_small,
+            "Summaries supplied by the policy; execution results supplied by the simulator.",
+            DIM,
+            (40, 674),
+        )
 
     # --- one frame ----------------------------------------------------------------------------
 
@@ -597,11 +724,5 @@ class NativeRenderer:
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    lines, cur = [], ""
-    for word in text.split():
-        if len(cur) + len(word) + 1 > width and cur:
-            lines.append(cur)
-            cur = word
-        else:
-            cur = f"{cur} {word}".strip()
-    return lines + ([cur] if cur else [])
+    """Greedy word wrap to lines of at most `width` characters."""
+    return textwrap.wrap(text, width=width)

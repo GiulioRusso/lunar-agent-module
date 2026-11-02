@@ -1,6 +1,6 @@
 """IMU model: specific force -> PIPA pulses, angle rate -> CDU pulses.
 
-APOLLO_AGENT_PLAN.md Phase 1 flags this as "the most failure-prone module in the
+CODE_REVIEW.md Phase 1 flags this as "the most failure-prone module in the
 project" and says to unit-test it against analytic constant-acceleration cases before
 ever wiring it to the AGC -- see tests/unit/test_sensors.py. This module is deliberately
 just the physics + quantization; the socket-level encoding of a pulse as an
@@ -22,6 +22,11 @@ A PIPA is a true integrator: it accumulates specific force continuously and only
 outputs whole pulses, carrying the fractional remainder forward. PulseCounter models
 that residual explicitly so a sustained sub-threshold acceleration still eventually
 produces pulses, instead of being silently rounded to zero every step.
+
+IMU = Inertial Measurement Unit: gyro-stabilised platform with accelerometers (PIPAs) on it.
+"Specific force" = what an accelerometer feels: thrust / mass (gravity is not felt in free fall).
+Flow: plant physics -> specific force -> Imu.sample -> pulse counts -> client.send_pipa_pulses
+-> AGC navigation integrates them into velocity and position.
 """
 
 from __future__ import annotations
@@ -46,9 +51,9 @@ class PulseCounter:
         """Fold in `delta` (already in the same units as scale*pulses, e.g. a velocity
         increment for a PIPA) and return the signed whole-pulse count emitted now.
         """
-        total = self._residual + delta / self.scale
-        pulses = math.trunc(total)
-        self._residual = total - pulses
+        total = self._residual + delta / self.scale  # in pulses, possibly fractional
+        pulses = math.trunc(total)  # whole pulses only (towards zero, keeps the sign)
+        self._residual = total - pulses  # carry the fraction to the next call
         return pulses
 
 
@@ -75,6 +80,7 @@ class Imu:
         dt_s: float,
     ) -> tuple[tuple[int, int, int], int]:
         """One sample over `dt_s`: returns ((pipa_x, pipa_y, pipa_z) pulses, cdu pulses)."""
+        # velocity change = specific force * time; one counter per axis.
         pulses = (
             self.pipa[0].pulses_for(specific_force_sm[0] * dt_s),
             self.pipa[1].pulses_for(specific_force_sm[1] * dt_s),

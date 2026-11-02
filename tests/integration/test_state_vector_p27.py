@@ -1,6 +1,14 @@
 """Sub-gate 1b (part): an LM state vector goes in through P27 and Luminary's own INTWAKEU
 installs it as the permanent LM state vector (RRECTLEM/VRECTLEM/TETLEM). Reading those back
 is proof the flight software accepted it -- we never write them ourselves.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_state_vector_p27.py -v`.
 """
 
 from __future__ import annotations

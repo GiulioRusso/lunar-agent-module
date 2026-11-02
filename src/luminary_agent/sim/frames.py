@@ -19,6 +19,11 @@ Everything the AGC is told is expressed in the reference frame through this basi
     time Luminary evaluates RP-TO-R (TLAND). Luminary then treats the site as a fixed inertial
     point; the plant's surface rotates under it (see MOON_ROTATION_RAD_S), so it is at that
     point at TLAND.
+
+Plain words: the physics is 2-D (a slice through the Moon), the AGC thinks in 3-D. This module
+places that 2-D slice inside the AGC's 3-D space. e1 and e2 are two perpendicular unit vectors
+spanning the slice; any 2-D point (x, y) becomes x*e1 + y*e2 in 3-D.
+Vectors are plain tuples; dot/cross/mat_vec are the usual linear-algebra operations.
 """
 
 from __future__ import annotations
@@ -35,10 +40,12 @@ IDENTITY: Mat = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 
 
 def dot(a: Vec, b: Vec) -> float:
+    """Dot product (a . b)."""
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def cross(a: Vec, b: Vec) -> Vec:
+    """Cross product (a x b): perpendicular to both."""
     return (
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -47,14 +54,17 @@ def cross(a: Vec, b: Vec) -> Vec:
 
 
 def neg(a: Vec) -> Vec:
+    """-a."""
     return (-a[0], -a[1], -a[2])
 
 
 def mat_vec(m: Mat, v: Vec) -> Vec:
+    """Matrix (tuple of rows) times vector."""
     return (dot(m[0], v), dot(m[1], v), dot(m[2], v))
 
 
 def theta_rad(state: PlanarState) -> float:
+    """Angle travelled around the Moon's centre (arc length / radius)."""
     return state.x_m / R_MOON
 
 
@@ -66,11 +76,14 @@ def inertial_vector(radial: float, tangential: float, theta: float) -> tuple[flo
 
 @dataclass(frozen=True)
 class LunarFrame:
-    e1: Vec
-    e2: Vec
+    """The plant's 2-D plane inside the AGC's 3-D reference frame."""
+
+    e1: Vec  # unit vector: plane x axis (where the plant starts, theta = 0)
+    e2: Vec  # unit vector: plane y axis (90 degrees ahead, the direction of travel)
 
     @classmethod
     def from_moon(cls, t_ref_cs: float, t0_cs: float = 0.0) -> LunarFrame:
+        """The frame in the Moon's equatorial plane at time t_ref_cs (see module docstring)."""
         m = moon_matrix(t_ref_cs, t0_cs)
         pole, e1 = m[2], m[0]
         e2 = cross(pole, e1)
@@ -83,9 +96,11 @@ class LunarFrame:
 
     @property
     def normal(self) -> Vec:
+        """Unit vector perpendicular to the plane (the orbit's angular-momentum direction)."""
         return cross(self.e1, self.e2)
 
     def to_ref(self, x: float, y: float) -> Vec:
+        """2-D plane point/vector (x, y) -> 3-D reference vector x*e1 + y*e2."""
         return (
             self.e1[0] * x + self.e2[0] * y,
             self.e1[1] * x + self.e2[1] * y,
@@ -93,10 +108,12 @@ class LunarFrame:
         )
 
     def up_and_travel(self, theta: float) -> tuple[Vec, Vec]:
+        """Local "up" and "forward" unit vectors at angle theta around the Moon."""
         c, s = math.cos(theta), math.sin(theta)
         return self.to_ref(c, s), self.to_ref(-s, c)
 
     def site_ref(self, theta_site: float, radius_m: float = R_MOON) -> Vec:
+        """3-D position of the landing site (on the surface at angle theta_site)."""
         up, _ = self.up_and_travel(theta_site)
         return (up[0] * radius_m, up[1] * radius_m, up[2] * radius_m)
 
@@ -110,6 +127,7 @@ class LunarFrame:
         return r_to_rp(self.site_ref(theta_site), t_land_cs, t0_cs)
 
     def state_vector(self, state: PlanarState, t_cs: float) -> StateVector:
+        """The plant's 2-D state as the 3-D StateVector the AGC is loaded with."""
         theta = theta_rad(state)
         rx, ry = inertial_vector(R_MOON + state.h_m, 0.0, theta)
         vx, vy = inertial_vector(state.hdot_ms, state.xdot_ms, theta)
@@ -118,6 +136,7 @@ class LunarFrame:
     def specific_force_ref(
         self, radial: float, tangential: float, theta: float, normal: float = 0.0
     ) -> Vec:
+        """Accelerometer reading (thrust/mass) in 3-D; `normal` = out-of-plane component."""
         ax, ay = inertial_vector(radial, tangential, theta)
         x, y, z = self.to_ref(ax, ay)
         n = self.normal

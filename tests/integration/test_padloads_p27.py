@@ -4,6 +4,14 @@ Values come from external/virtualagc/Luminary069/PADLOADS.agc (Apollo 10's softw
 guidance family as Luminary 99 but NOT Apollo 11's loads -- see padloads.py), landing mode
 ONE-PHASE. TLAND has no documented value and is scenario-supplied, so it is excluded here.
 Slow by nature (~70 words typed at DSKY speed against a wall-clock-paced AGC): about 2 minutes.
+
+Integration test: starts a real yaAGC running Luminary 099 (needs `make agc` first; the module-
+level `pytestmark = skipif(...)` skips every test here otherwise). Each test uses its own fixed
+TCP port numbers on 127.0.0.1 so tests can run without colliding; `tmp_path` is the scratch
+folder yaAGC writes its core files into. `asyncio.run(run())` drives the async API from a
+plain (synchronous) pytest function.
+
+Run alone: `uv run pytest tests/integration/test_padloads_p27.py -v`.
 """
 
 from __future__ import annotations

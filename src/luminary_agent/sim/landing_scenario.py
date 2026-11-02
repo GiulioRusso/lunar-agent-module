@@ -10,6 +10,11 @@ Geometry (all derived from Luminary's own targets, see plant/orbit.py and sim/fr
   * the landing site is RIGNZ = 440,015 m of ground range beyond perilune;
   * TLAND is perilune + GUIDDURN (664.4 s), the guidance duration Luminary subtracts to get its
     first ignition-time guess.
+
+Plain words: before Luminary can fly a landing, its memory must hold the mission data (where is
+the LM, where is the landing site, when to land, which way the platform points...). This file
+types all of that in, in the same order and through the same programs the real crew/ground used.
+It takes ~10 s, so snapshot.py saves the result and later episodes resume from it.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from luminary_agent.plant.lunar_orientation import Mat
 from luminary_agent.plant.orbit import DescentOrbit
 from luminary_agent.sim.frames import LunarFrame
 
+# Mission geometry constants (see the module docstring).
 VIGN_MS = 1_699.5218  # 16.9952 m/cs, Luminary pad load
 RIGNZ_M = 440_015.0  # ground range from ignition to the site, pad load
 GUIDDURN_S = 664.4  # THE_LUNAR_LANDING.agc
@@ -50,6 +56,8 @@ NU0_RAD = -0.29  # true anomaly at the start: ~5 minutes before perilune
 
 @dataclass(frozen=True)
 class DescentScenario:
+    """The nominal geometry of one descent; every derived quantity is a property."""
+
     perilune_alt_m: float = PERILUNE_ALT_M
     perilune_speed_ms: float = VIGN_MS
     nu0_rad: float = NU0_RAD
@@ -58,14 +66,17 @@ class DescentScenario:
 
     @property
     def orbit(self) -> DescentOrbit:
+        """The coasting ellipse whose perilune is the ignition point."""
         return DescentOrbit.with_perilune_speed(self.perilune_alt_m, self.perilune_speed_ms)
 
     @property
     def start_state(self) -> PlanarState:
+        """Plant state at the start of the simulation (a few minutes before ignition)."""
         return self.orbit.state_at(self.nu0_rad, self.mass_kg)
 
     @property
     def time_to_perilune_s(self) -> float:
+        """Seconds from the start to perilune (= nominal ignition)."""
         return self.orbit.time_to_perilune_s(self.nu0_rad)
 
     @property
@@ -76,6 +87,8 @@ class DescentScenario:
 
 @dataclass(frozen=True)
 class LandingSetup:
+    """What prepare_landing decided, needed later by the loop (and saved with the snapshot)."""
+
     scenario: DescentScenario
     frame: LunarFrame
     refsmmat: Mat
@@ -104,20 +117,25 @@ async def prepare_landing(
     dsky = SteppedDsky(agc, client)
     updater = Updater(agc, client)
 
+    # 1. Fresh start (clear alarms), 2. set the switches (discretes).
     await dsky.fresh_start()
     await client.write_channels(Discretes(lr_position_1=True).channel_words())
     await agc.step(60_000)  # T4RUPT mirrors the discretes within 480 ms
 
+    # 3. Mission pad loads (landing-related ones only) + P65/P66 constants, then the REFSMMAT-good
+    #    flag.
     entries = {n: p.words for n, p in load_padloads().items() if p.is_landing and p.words}
     entries.update(_VERTICAL_DESCENT_LOADS)
     await run_plan(updater, plan_loads(padload_words(symbols, entries)))
     await set_flag_bit(updater, agc, symbols, "FLAGWRD3", REFSMBIT_MASK)
 
+    # 4. Timing and geometry: when to land, and the platform orientation for the landing.
     now_cs = (await agc.coredump()).clock_cs
     t_land_cs = now_cs + round((scenario.time_to_perilune_s + GUIDDURN_S) * 100)
     frame = LunarFrame.from_moon(t_land_cs)
     refsmmat = frame.landing_refsmmat(scenario.theta_site)
 
+    # 5. Load them: platform matrix, landing site, landing time, then the LM's state vector.
     await updater.v71(symbols.ecadr("REFSMMAT"), refsmmat_words(refsmmat))
     await updater.v71(symbols.ecadr("RLS"), rls_words(frame.rls(scenario.theta_site, t_land_cs)))
     await updater.v71(symbols.ecadr("TLAND"), tland_words(t_land_cs))

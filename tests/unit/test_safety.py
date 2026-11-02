@@ -1,4 +1,9 @@
-"""The safety monitor vetoes what it must and stays quiet through a nominal descent."""
+"""The safety monitor vetoes what it must and stays quiet through a nominal descent.
+
+Reuses `obs()` from test_events.py (same folder) to build Observations.
+
+Run alone: `uv run pytest tests/unit/test_safety.py -v`.
+"""
 
 from __future__ import annotations
 

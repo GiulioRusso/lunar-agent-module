@@ -1,3 +1,10 @@
+"""Unit tests for sim/frames.py: the 2-D plant plane placed in the AGC's 3-D reference frame,
+the landing REFSMMAT, the Moon-fixed landing site (RLS), and state-vector construction.
+`pytest.approx` compares floats with a tolerance.
+
+Run alone: `uv run pytest tests/unit/test_frames.py -v`.
+"""
+
 import math
 
 import pytest

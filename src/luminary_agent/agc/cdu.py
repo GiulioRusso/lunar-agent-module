@@ -9,6 +9,9 @@ same units -- confirmed against a live AGC: THETAD = (-47, 9792, 35) counts show
 Seeding the registers at the desired burn attitude makes P63's automatic maneuver (R60LEM) a
 no-op. That is a stepping stone to ignition, NOT attitude dynamics: nothing here rotates a
 vehicle.
+
+CDU = "Coupling Data Unit": the box that turned the IMU's gimbal angles (the orientation of the
+LM relative to the gyro-stabilised platform) into counter pulses for the AGC. 3 axes -> X, Y, Z.
 """
 
 from __future__ import annotations
@@ -19,13 +22,13 @@ from luminary_agent.agc.process import AgcProcess
 from luminary_agent.agc.registers import REG_CDUX, REG_CDUY, REG_CDUZ
 from luminary_agent.agc.symbols import SymbolTable
 
-COUNTS_PER_REV = 1 << 15
+COUNTS_PER_REV = 1 << 15  # 32768 counts = 360 degrees
 CDU_REGISTERS = (REG_CDUX, REG_CDUY, REG_CDUZ)
 
 
 def desired_gimbal_counts(dump: CoreDump, symbols: SymbolTable) -> tuple[int, int, int]:
     """Luminary's THETAD as signed counts (X, Y, Z)."""
-    words = dump.ecadr_words(symbols.ecadr("THETAD"), 3)
+    words = dump.ecadr_words(symbols.ecadr("THETAD"), 3)  # 3 consecutive words from memory
     x, y, z = (decode_agc_word(w) for w in words)
     return x, y, z
 
@@ -35,6 +38,7 @@ def cdu_counts(dump: CoreDump) -> tuple[int, int, int]:
     out = []
     for reg in CDU_REGISTERS:
         raw = dump.erasable[0][reg]
+        # Two's complement mod 2**15: the upper half of the range means negative.
         out.append(raw - COUNTS_PER_REV if raw >= COUNTS_PER_REV // 2 else raw)
     return out[0], out[1], out[2]
 
@@ -54,8 +58,10 @@ async def seed_cdus(
     """
     present = cdu_counts(await agc.coredump())
     for reg, now, want in zip(CDU_REGISTERS, present, target, strict=True):
+        # Shortest way round the circle, in [-16384, 16384): 350 -> 10 deg is +20, not -340.
         delta = (want - now + COUNTS_PER_REV // 2) % COUNTS_PER_REV - COUNTS_PER_REV // 2
         await client.send_cdu_pulses(reg, delta, fast=True)
+    # Let the AGC run (and yaAGC drain its pulse queue) until the registers read the target.
     for _ in range(max_chunks):
         await agc.step(chunk_steps)
         if cdu_counts(await agc.coredump()) == target:

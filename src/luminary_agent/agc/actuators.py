@@ -11,12 +11,16 @@ Ground truth: external/virtualagc/Luminary099/INPUT_OUTPUT_CHANNEL_BIT_DESCRIPTI
 
 Jet bits aren't decoded past a raw bitmask: the 3-DoF planar plant this is wired to has
 no attitude dynamics yet, so there's nothing to map individual jets onto until 6-DoF.
+
+"Bit 13" in the 1969 docs counts from 1, so it is Python's `1 << 12`. RCS = the small
+attitude-control thrusters; the DPS = the big descent engine.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Channel numbers (octal, as in the original documentation).
 CH_PYJETS = 0o5
 CH_ROLLJETS = 0o6
 CH_DSALMOUT = 0o11
@@ -29,6 +33,8 @@ BIT4 = 1 << 3  # THRUST DRIVE ACTIVITY
 
 @dataclass
 class ActuatorState:
+    """What the AGC is commanding, rebuilt from the channel packets client.py receives."""
+
     pitch_jets: int = 0  # raw 8-bit PYJETS pattern
     roll_jets: int = 0  # raw 8-bit ROLLJETS pattern
     engine_on: bool = False
@@ -36,6 +42,7 @@ class ActuatorState:
     _last_strobe: bool = field(default=False, init=False, repr=False)
 
     def apply_channel(self, channel: int, value: int) -> None:
+        """Update the state from one channel write; other channels are ignored."""
         if channel == CH_PYJETS:
             self.pitch_jets = value & 0xFF
         elif channel == CH_ROLLJETS:
@@ -47,6 +54,7 @@ class ActuatorState:
                 self.engine_on = False
         elif channel == CH_14:
             strobe = bool(value & BIT4)
+            # Count rising edges (off -> on) only: the bit may stay set across several writes.
             if strobe and not self._last_strobe:
                 self.throttle_strobe_count += 1
             self._last_strobe = strobe

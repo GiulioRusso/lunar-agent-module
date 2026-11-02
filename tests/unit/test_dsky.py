@@ -1,3 +1,10 @@
+"""Unit tests for agc/dsky.py: turning channel-010 segment codes back into PROG/VERB/NOUN and
+R1-R3 numbers, including yaDSKY2's two-bit sign rule. `_channel_010` builds a channel word
+(tag | left code << 5 | right code, plus the 0x0400 sign bit) the way the AGC would send it.
+
+Run alone: `uv run pytest tests/unit/test_dsky.py -v`.
+"""
+
 from luminary_agent.agc.dsky import DskyState
 
 

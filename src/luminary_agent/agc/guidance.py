@@ -14,6 +14,10 @@ Three quantities, all plain erasables (never on the socket):
 With no attitude dynamics the plant treats the vehicle as *perfectly pointed* along UNFC/2. That
 is a stepping stone (the real DAP takes seconds to slew and rings about its deadband) and any
 result that depends on it must say so.
+
+"Stable-member axes" = the coordinate frame of the IMU platform, which stays fixed in inertial
+space; REFSMMAT (landing_setup.py) says how it is oriented. "Double precision" = one number
+spread over two 15-bit words (scaling.py).
 """
 
 from __future__ import annotations
@@ -25,23 +29,27 @@ from luminary_agent.agc.coredump import THRUST_REGISTER, CoreDump
 from luminary_agent.agc.scaling import dp_to_value
 from luminary_agent.agc.symbols import SymbolTable
 
-Vec = tuple[float, float, float]
+Vec = tuple[float, float, float]  # (x, y, z)
 
 
 @dataclass(frozen=True)
 class GuidanceSample:
+    """One snapshot of what Luminary's guidance is asking the engine to do."""
+
     thrust_increment_counts: int
     thrust_direction_sm: Vec | None  # unit vector, or None if the command is (still) zero
     command_stamp: int = 0  # TTHROT: differs from the last one iff a new command was issued
 
 
 def read_guidance(dump: CoreDump, symbols: SymbolTable) -> GuidanceSample:
+    """Extract THRUST, UNFC/2 and TTHROT from a core dump (addresses via the symbol table)."""
     words = dump.ecadr_words(symbols.ecadr("UNFC/2"), 6)
     v = (
         dp_to_value(words[0], words[1], 1),
         dp_to_value(words[2], words[3], 1),
         dp_to_value(words[4], words[5], 1),
     )
+    # Normalise to a unit vector (length 1); a near-zero vector means "no command yet".
     norm = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
     direction: Vec | None = (v[0] / norm, v[1] / norm, v[2] / norm) if norm > 1e-6 else None
     stamp = dump.ecadr_words(symbols.ecadr("TTHROT"), 1)[0]

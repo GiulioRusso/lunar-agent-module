@@ -1,3 +1,11 @@
+"""Unit tests for viz/live.py, the simulation -> window frame queue.
+`monkeypatch` (pytest fixture) temporarily replaces time.monotonic with a fake clock we control.
+`viz_records` is the helper module in this folder (pytest puts the test file's folder on
+sys.path, so it imports like a top-level module).
+
+Run alone: `uv run pytest tests/unit/test_live_feed.py -v`.
+"""
+
 import multiprocessing
 import queue
 
@@ -7,6 +15,8 @@ from luminary_agent.viz import live
 from luminary_agent.viz.live import LiveFeed, LiveReader
 
 
+# A connected (feed, reader) pair over an in-process queue.Queue (same API as the real
+# multiprocessing.Queue).
 def pair(size: int = live.BACKLOG) -> tuple[LiveFeed, LiveReader, queue.Queue[object]]:
     q: queue.Queue[object] = queue.Queue(size)
     return LiveFeed(0.0, 6_800.0, q), LiveReader(q), q
@@ -56,6 +66,7 @@ def test_the_feed_works_across_a_process_boundary() -> None:
     assert len(frames) == 1 and frames[0].intent == "hold" and reader.summary == {"landed": True}
 
 
+# Runs in the child process (module-level so "spawn" can import it by name).
 def _child(q: object) -> None:
     feed = LiveFeed(0.0, 6_800.0, q)  # type: ignore[arg-type]
     feed.publish_decision(decision("hold"))
