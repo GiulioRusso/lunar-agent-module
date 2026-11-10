@@ -50,6 +50,8 @@ To see the application, use the local launcher below.
 | Set up a new checkout | [First-time setup](#first-time-setup) |
 | Understand the screen and its controls | [Watch and inspect a flight](#watch-and-inspect-a-flight) |
 | Understand the agent, AGC and simulator | [How a flight works](#how-a-flight-works) |
+| Trace agent components and method calls | [Agent component interfaces](#agent-component-interfaces) |
+| Choose a test or runtime environment | [Execution and test environments](#execution-and-test-environments) |
 | Find the code to read or change | [Code guide](#code-guide) |
 | Change the model or other settings | [Configuration](#configuration) |
 | Run tests or compare policies | [Tests and evaluation](#tests-and-evaluation) |
@@ -251,17 +253,24 @@ labelled `fixture/no-llm`: its responses were controlled by the test, not genera
 
 ```mermaid
 flowchart LR
-    Plant["Spacecraft physics"] -->|simulated sensor inputs| AGC["yaAGC + Luminary"]
-    AGC -->|automatic guidance| Plant
-    Plant --> Obs["Observation"]
-    Obs --> Agent["LangGraph + local model"]
+    Episode["Episode runner"] -->|assembles| Loop["Descent loop"]
+    Loop -->|tick| Sim["Simulation"]
+    Sim -->|integrate| Plant["Spacecraft physics"]
+    Sim -->|sensor inputs / stepping| AGC["yaAGC + Luminary"]
+    AGC -->|automatic guidance| Sim
+    Plant -->|state| Obs["Observation"]
+    AGC -->|display / alarms| Obs
+    Obs --> Trigger["Decision trigger"]
+    Trigger -->|when due| Agent["LangGraph + model"]
+    Obs --> Agent
     Obs --> Safety["Safety monitor"]
     Agent -->|proposed intent| Executor["Executor"]
     Safety -->|priority override| Executor
+    Executor -->|capabilities / feedback| Obs
     Executor -->|manual velocity targets| Controller["Manual controller"]
-    Controller -->|thrust| Plant
+    Controller -->|thrust / direction| Sim
     Executor -->|DSKY inputs| AGC
-    Plant --> Records["Log and view frames"]
+    Sim --> Records["Log and view frames"]
     Executor --> Records
     Agent -->|progress and summaries| Records
     Records --> Viewer["Live window / replay"]
@@ -296,13 +305,20 @@ target/terrain information, available actions, and feedback from the previous ac
 
 ```mermaid
 flowchart TD
-    Observe["Observe instruments and recent history"] --> Propose["Ask the model for a structured decision"]
-    Propose --> Validate{"Valid action and currently available?"}
-    Validate -->|yes| Commit["Return Intent to executor"]
-    Validate -->|no, one repair remains| Repair["Send validation feedback to model"]
-    Repair --> Validate
-    Validate -->|attempts or call budget exhausted| Fallback["Return deterministic fallback Intent"]
+    Start((START)) --> Observe["observe: _observe"]
+    Observe --> Propose["propose: _propose"]
+    Propose --> Validate["validate: _validate"]
+    Validate --> Route{"_route"}
+    Route -->|valid| Commit["commit: _commit"]
+    Route -->|repair| Propose
+    Route -->|exhausted| Fallback["fallback: _fallback"]
+    Commit --> Done((END))
+    Fallback --> Done
 ```
+
+These are the actual registered nodes and method names. `repair` is an edge back to `_propose`,
+not a separate node: the next request includes the validation error. `commit` returns a validated
+request; spacecraft execution happens afterwards, outside the graph.
 
 In [policies/agent.py](src/luminary_agent/policies/agent.py):
 
@@ -311,7 +327,7 @@ In [policies/agent.py](src/luminary_agent/policies/agent.py):
   rationale, evidence, risks and plan.
 - **LangGraph's `StateGraph`** connects observation, proposal, validation, repair, commit and fallback.
 - **The action catalog and current capabilities** decide whether a proposed action can be used.
-  The graph retains the last eight decisions for context; it does not train model weights.
+  `FlightAgent.history` retains the last eight decisions by default; it does not train model weights.
 
 For example, suppose the lander is already in manual mode and the model returns:
 
@@ -340,6 +356,163 @@ the graph uses an explicitly labelled fallback: scripted takeover logic in autom
 default descent schedule with zero horizontal targets in manual mode. A later consultation can
 recover from a transient model error. An outer worker timeout instead disables that policy for
 the rest of the episode. See the validation and fallback workflow above.
+
+### Agent component interfaces
+
+The UML-style view below separates the decision workflow from its data and execution boundary.
+`AgentState` is the shared dictionary for one graph invocation; `FlightAgent.history` persists
+between consultations within an episode. See [agent.py](src/luminary_agent/policies/agent.py),
+[base.py](src/luminary_agent/policies/base.py) and
+[executor.py](src/luminary_agent/sim/executor.py).
+
+```mermaid
+classDiagram
+    class Policy {
+        <<interface>>
+        decide(obs, t_s) Intent
+        reset()
+    }
+    class FlightAgent {
+        history
+        graph
+        decide(obs, t_s) Intent
+    }
+    class AgentState {
+        obs
+        proposal
+        intent
+        attempt
+        error
+        path
+    }
+    class StructuredModel {
+        <<interface>>
+        invoke(messages)
+    }
+    class FlightDecision {
+        kind
+        params
+        revisit_s
+        rationale
+        evidence
+        risks
+        plan
+    }
+    class Intent {
+        kind
+        params
+        valid_until_s
+        rationale
+        details
+    }
+    class Executor {
+        capabilities
+        last_feedback
+        execute(intent) ActionResult
+    }
+    Policy <|.. FlightAgent
+    FlightAgent --> AgentState : graph state
+    FlightAgent --> StructuredModel : _propose
+    StructuredModel ..> FlightDecision : structured response
+    FlightAgent ..> Intent : validates and returns
+    AgentState --> Observation : obs
+    AgentState --> FlightDecision : proposal
+    AgentState --> Intent : intent
+    Executor ..> Intent : consumes
+    Executor ..> ActionResult : produces
+```
+
+The following sequence traces the successful policy path. While `_consult()` waits for the
+worker, physics and AGC stepping stop. Safety overrides take a separate path to `_act()` and
+have priority over policy consultation.
+
+```mermaid
+sequenceDiagram
+    participant Loop as descent._fly
+    participant Runner as DecisionRunner
+    participant Agent as FlightAgent
+    participant Model as StructuredModel
+    participant Exec as Executor
+    participant Sim as Simulation
+    Loop->>Sim: tick()
+    Sim-->>Loop: updated state
+    Note over Loop: observe(); monitor.check(obs)
+    Note over Loop: trigger.reason(obs)
+    Loop->>Runner: _consult(): decide(obs)
+    Runner->>Agent: decide(obs, obs.t_s)
+    Agent->>Agent: graph.invoke({obs})
+    Agent->>Model: _propose(): invoke(messages)
+    Model-->>Agent: FlightDecision
+    Agent->>Agent: _validate(); _route(); _commit()
+    Agent-->>Runner: Intent
+    Runner-->>Loop: Intent
+    Loop->>Exec: _act(): apply(intent)
+    Exec->>Exec: execute(): validate / check capability
+    Exec-->>Loop: status; last_feedback
+    Note over Loop,Exec: Next Observation includes execution feedback
+```
+
+The method-level handoffs below identify where each component reaches outside its own block.
+Arrows label the called method or the data crossing the boundary. Solid arrows are calls or control
+wiring; dotted arrows show returned or published data.
+
+```mermaid
+flowchart TD
+    subgraph Orchestration["Episode and descent"]
+        Run["run_episode.run"]
+        Fly["descent._fly"]
+        Observe["descent.observe"]
+        Consult["descent._consult"]
+        Act["descent._act"]
+    end
+    subgraph Decision["Agent"]
+        Runner["DecisionRunner.decide"]
+        Decide["FlightAgent.decide"]
+        Propose["_propose"]
+        Validate["_validate"]
+        Model["StructuredModel.invoke"]
+    end
+    subgraph Execution["Execution and flight"]
+        Exec["Executor.apply / execute"]
+        Manual["ManualController"]
+        Ops["AgcOperations.execute"]
+        Tick["Simulation.tick"]
+        AGC["yaAGC"]
+    end
+    Run -->|run_descent| Fly
+    Fly -->|tick| Tick
+    Fly --> Observe
+    Observe -.->|Observation| Consult
+    Fly -->|when due| Consult
+    Consult -->|decide| Runner
+    Runner -->|decide| Decide
+    Decide -->|graph.invoke| Propose
+    Propose -->|messages| Model
+    Model -.->|FlightDecision| Validate
+    Validate -->|validate_intent| Check["base.validate_intent"]
+    Decide -.->|Intent| Consult
+    Consult --> Act
+    Fly -->|safety intent| Act
+    Act -->|apply| Exec
+    Exec -->|take_manual: sim.manual| Tick
+    Exec -->|command: set_targets| Manual
+    Tick -->|manual: control_3d| Manual
+    Manual -.->|Control| Tick
+    Exec -->|dsky_key| Ops
+    Ops -->|press_key| AGC
+    Tick -->|send_pipa_pulses / clock.advance| AGC
+    AGC -.->|I/O / coredump guidance| Tick
+    Exec -.->|last_feedback / capabilities| Observe
+    Tick -.->|records| Records["Recorder / LiveFeed"]
+    Act -.->|decision / execution| Records
+    Decide -.->|_event via _consult| Records
+```
+
+`_validate()` checks the proposal against the action catalog and observed capabilities; the executor
+checks again before mutation. Neither check proves that the maneuver will achieve a safe landing.
+`take_manual` installs a controller callback on `Simulation`; later `command` requests update its
+velocity targets. `dsky_key` reaches the AGC keyboard backend and reports `submitted`, not a
+confirmed maneuver. Intent expiry schedules reassessment; it does not automatically clear targets.
 
 ### What the agent can control today
 
@@ -461,6 +634,43 @@ Cloud backends remain available through `--provider openai` or `--provider anthr
 Use `uv run luminary fly --help`, `view --help` or `eval --help` for the complete CLI reference.
 
 ## Tests and evaluation
+
+### Execution and test environments
+
+All commands below run from the repository root in the Python environment managed by `uv`.
+Use Python 3.12 and `uv sync --extra agent`; real-AGC modes also require `make agc` and the native
+build tools listed in [first-time setup](#first-time-setup). The supported paths here are local
+processes, not separate deployed services.
+
+```mermaid
+flowchart LR
+    Unit["Unit tests"] --> Fixtures["Controlled responses / fakes"]
+    Integration["Integration tests"] --> RealAGC["Built yaAGC"]
+    Integration --> Fixtures
+    Interactive["Live flight"] --> RealAGC
+    Interactive --> Ollama["Local Ollama"]
+    Batch["Headless evaluation"] --> RealAGC
+    Batch --> Ollama
+    Replay["Replay"] --> Log["Saved log"]
+```
+
+| Environment | What it exercises | Run |
+|---|---|---|
+| Unit tests | Graph routing, validation, fallback, controller and other isolated logic; controlled model responses/fakes where needed. No live model or AGC required. | `uv run --extra agent pytest tests/unit -q` |
+| Real-AGC integration | Emulator I/O, synchronized stepping and descents. The agent descent uses the real graph with a fixture model. No Ollama or API key required. | `make agc`, then `uv run --extra agent pytest tests/integration -q` |
+| Baseline flight | Real AGC and physics with a deterministic policy; desktop window. | `uv run luminary fly --tier 1 --seed 0 --policy scripted` |
+| Local-model flight | Real AGC, full graph and Ollama; desktop window and inspector. Requires Ollama running with `llama3.2:3b` installed. | `./launch-agent.sh` |
+| Headless local-model flight | Same agent/AGC path without a desktop window. Requires the same build and Ollama setup. | Add `--no-ui` to the expanded command in [run the local agent](#run-the-local-agent). |
+| Batch evaluation | Multiple headless episodes with saved scores/logs; real-model performance rather than fixture behavior. | Use the `luminary eval` command in [evaluate flight performance](#evaluate-flight-performance). |
+| Offline replay | Recorded trajectory and decisions; no inference or emulator process. A desktop is needed for the window. | `uv run luminary view results/runs/t1_s0_llm.jsonl.gz` |
+
+For a focused end-to-end graph check without a live model, run
+`uv run --extra agent pytest tests/integration/test_agent_descent.py -q` after `make agc`.
+That test validates integration, not LLM piloting performance. Cloud providers can replace Ollama
+in live/headless runs using the credentials and options in [configuration](#configuration).
+The headless paths are suitable for a terminal-only test host with the required build artifacts;
+tests also include off-screen UI rendering checks. Run integration tests without competing emulator
+flights to avoid fixed-port conflicts. See the next sections for test details and batch commands.
 
 ### Test the code
 
