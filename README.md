@@ -428,28 +428,28 @@ have priority over policy consultation.
 
 ```mermaid
 sequenceDiagram
-    participant Loop as descent._fly
+    participant Descent as descent._fly
     participant Runner as DecisionRunner
     participant Agent as FlightAgent
     participant Model as StructuredModel
     participant Exec as Executor
     participant Sim as Simulation
-    Loop->>Sim: tick()
-    Sim-->>Loop: updated state
-    Note over Loop: observe(); monitor.check(obs)
-    Note over Loop: trigger.reason(obs)
-    Loop->>Runner: _consult(): decide(obs)
+    Descent->>Sim: tick()
+    Sim-->>Descent: updated state
+    Note over Descent: observe(), monitor.check(obs)
+    Note over Descent: trigger.reason(obs)
+    Descent->>Runner: _consult(): decide(obs)
     Runner->>Agent: decide(obs, obs.t_s)
     Agent->>Agent: graph.invoke({obs})
     Agent->>Model: _propose(): invoke(messages)
     Model-->>Agent: FlightDecision
-    Agent->>Agent: _validate(); _route(); _commit()
+    Agent->>Agent: _validate(), _route(), _commit()
     Agent-->>Runner: Intent
-    Runner-->>Loop: Intent
-    Loop->>Exec: _act(): apply(intent)
+    Runner-->>Descent: Intent
+    Descent->>Exec: _act(): apply(intent)
     Exec->>Exec: execute(): validate / check capability
-    Exec-->>Loop: status; last_feedback
-    Note over Loop,Exec: Next Observation includes execution feedback
+    Exec-->>Descent: status, last_feedback
+    Note over Descent,Exec: Next Observation includes execution feedback
 ```
 
 The method-level handoffs below identify where each component reaches outside its own block.
